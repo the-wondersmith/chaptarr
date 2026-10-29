@@ -9,6 +9,7 @@ using NLog;
 using NzbDrone.Common.Extensions;
 using NzbDrone.Core.Configuration;
 using NzbDrone.Core.Download;
+using NzbDrone.Core.Download.TrackedDownloads;
 using NzbDrone.Core.Lifecycle;
 using NzbDrone.Core.Messaging.Commands;
 using NzbDrone.Core.Messaging.Events;
@@ -46,6 +47,7 @@ namespace NzbDrone.Core.MediaFiles
         private readonly IManageCommandQueue _commandQueue;
         private readonly Logger _logger;
         private readonly IConfigService _configService;
+        private readonly ITrackedDownloadService _trackedDownloadService;
         private CancellationTokenSource _shutdown;
         private Task _scheduler;
 
@@ -55,7 +57,8 @@ namespace NzbDrone.Core.MediaFiles
             IConversionTrackingService trackingService,
             IManageCommandQueue commandQueue,
             IConfigService configService,
-            Logger logger)
+            Logger logger,
+            ITrackedDownloadService trackedDownloadService = null)
         {
             _repository = repository;
             _conversionService = conversionService;
@@ -63,6 +66,7 @@ namespace NzbDrone.Core.MediaFiles
             _commandQueue = commandQueue;
             _configService = configService;
             _logger = logger;
+            _trackedDownloadService = trackedDownloadService;
         }
 
         public int WorkerConcurrency => Clamp(_configService?.AudiobookConversionConcurrentConversions ?? 1, 1, 16);
@@ -193,7 +197,7 @@ namespace NzbDrone.Core.MediaFiles
                 }
 
                 CleanupWorkRoot(job.WorkRoot);
-                QueueImportSweep();
+                QueueImportSweep(downloadId);
             }
 
             return true;
@@ -285,7 +289,7 @@ namespace NzbDrone.Core.MediaFiles
                         if (request != null && HasReusableArtifact(request))
                         {
                             MarkReady(job, "Recovered converted M4B; waiting to import");
-                            QueueImportSweep();
+                            QueueImportSweep(job.DownloadId);
                         }
                         else
                         {
@@ -297,7 +301,7 @@ namespace NzbDrone.Core.MediaFiles
                     case ConversionJobStatus.Cancelling:
                         MarkCancelled(job, "Conversion cancelled");
                         CleanupWorkRoot(job.WorkRoot);
-                        QueueImportSweep();
+                        QueueImportSweep(job.DownloadId);
                         break;
 
                     case ConversionJobStatus.Queued:
@@ -379,7 +383,7 @@ namespace NzbDrone.Core.MediaFiles
                 if (request != null && HasReusableArtifact(request))
                 {
                     MarkReady(job, "Recovered converted M4B; waiting to import");
-                    QueueImportSweep();
+                    QueueImportSweep(job.DownloadId);
                 }
                 else
                 {
@@ -556,7 +560,7 @@ namespace NzbDrone.Core.MediaFiles
                 _signal.Set();
                 if (_shutdown?.IsCancellationRequested != true)
                 {
-                    QueueImportSweep();
+                    QueueImportSweep(job.DownloadId);
                 }
                 active.Completion.TrySetResult();
             }
@@ -842,16 +846,42 @@ namespace NzbDrone.Core.MediaFiles
             File.Move(temporaryPath, manifestPath, true);
         }
 
-        private void QueueImportSweep()
+        private void QueueImportSweep(string downloadId = null)
         {
             try
             {
+                ReleaseBlockedImport(downloadId);
                 _commandQueue.Push(new ProcessMonitoredDownloadsCommand(), CommandPriority.High);
             }
             catch (Exception ex)
             {
                 _logger.Warn(ex, "Unable to queue completed-download import after conversion state changed");
             }
+        }
+
+        // `ProcessMonitoredDownloads` skips anything that is not still `Downloading`,
+        // and `SetImportItem` skips `ImportBlocked` outright, so pushing the command
+        // on its own can never rescue the item it was pushed for. Hand the download
+        // back to the import pipeline first, otherwise the sweep is a no-op for exactly
+        // the state it exists to clear. Only fires on discrete job-state transitions,
+        // never on a timer.
+        private void ReleaseBlockedImport(string downloadId)
+        {
+            if (downloadId.IsNullOrWhiteSpace() || _trackedDownloadService == null)
+            {
+                return;
+            }
+
+            var trackedDownload = _trackedDownloadService.Find(downloadId);
+            if (trackedDownload?.State != TrackedDownloadState.ImportBlocked)
+            {
+                return;
+            }
+
+            trackedDownload.State = TrackedDownloadState.ImportPending;
+            trackedDownload.MissingAuthoritativeMediaFileAttempts = 0;
+            trackedDownload.ClearStatus();
+            _logger.Debug("[CONVERSION] Released blocked import for {0} after conversion state change", downloadId);
         }
 
         private void CleanupWorkRoot(string workRoot)
