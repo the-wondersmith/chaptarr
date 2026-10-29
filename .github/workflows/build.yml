@@ -26,19 +26,10 @@ permissions:
   contents: read
 
 jobs:
+  # Linux only. The fork ships Docker images and nothing else, so Windows and
+  # macOS legs would gate releases on platforms no one consumes.
   build:
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-        include:
-          - os: ubuntu-latest
-            platform: linux
-          - os: windows-latest
-            platform: win
-          - os: macos-latest
-            platform: osx
+    runs-on: ubuntu-latest
 
     steps:
     - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
@@ -105,7 +96,6 @@ jobs:
         dotnet-version: 10.0.x
 
     - name: Cache NuGet packages
-      if: runner.os == 'Windows'
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ~/.nuget/packages
@@ -136,7 +126,7 @@ jobs:
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: chaptarr-${{ matrix.platform }}
+        name: chaptarr-linux
         path: ./publish/
         retention-days: 7
         if-no-files-found: error
