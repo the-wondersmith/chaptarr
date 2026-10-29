@@ -159,5 +159,38 @@ namespace Chaptarr.Core.Test.MediaFiles
 
             Assert.That(parsed, Is.False);
         }
+
+        [Test]
+        public void should_drop_the_step_counter_for_a_single_file_conversion()
+        {
+            var parser = new M4bToolProgressParser(1);
+
+            var parsed = parser.TryParse("1 remaining / 1 total\r", out var update);
+
+            // One file is one m4b-tool task, so this counter reads "0 of 1" for the whole
+            // run - a 23 minute transcode that looks identical to a hung process.
+            Assert.That(parsed, Is.True);
+            Assert.That(update.Message, Is.EqualTo("Converting to M4B"));
+        }
+
+        [Test]
+        public void should_still_finalize_a_single_file_conversion()
+        {
+            var parser = new M4bToolProgressParser(1);
+
+            var parsed = parser.TryParse("0 remaining / 1 total\r", out var update);
+
+            Assert.That(parsed, Is.True);
+            Assert.That(update.Message, Is.EqualTo("Finalizing M4B"));
+        }
+
+        [TestCase(0L, "Converting to M4B - 0 MB written")]
+        [TestCase(299892780L, "Converting to M4B - 286 MB written")]
+        [TestCase(1073741824L, "Converting to M4B - 1.0 GB written")]
+        [TestCase(6442450944L, "Converting to M4B - 6.0 GB written")]
+        public void should_format_bytes_written_heartbeat(long bytes, string expected)
+        {
+            Assert.That(M4bToolProgressParser.FormatBytesWrittenMessage(bytes), Is.EqualTo(expected));
+        }
     }
 }
