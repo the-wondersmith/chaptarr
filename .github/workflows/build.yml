@@ -1,10 +1,13 @@
+---
 name: Build Chaptarr
 
 on:
   push:
-    branches: [ main, develop ]
+    branches:
+      - fork/main
   pull_request:
-    branches: [ main, develop ]
+    branches:
+      - fork/main
   workflow_call:
   workflow_dispatch:
 

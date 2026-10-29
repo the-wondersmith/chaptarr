@@ -1,7 +1,7 @@
+---
 name: Release
 
-# Manual only. Pick the branch in the Run workflow dropdown:
-# develop cuts a pre-release, main promotes to stable.
+# Manual only. Publishes the fork's images to ghcr.io/the-wondersmith/chaptarr.
 on:
   workflow_dispatch:
 
@@ -20,20 +20,8 @@ jobs:
       shell: bash
       run: |
         set -euo pipefail
-        if [[ "${GITHUB_REF}" != "refs/heads/develop" && "${GITHUB_REF}" != "refs/heads/main" ]]; then
-          echo "Releases must run from develop or main; selected ref is ${GITHUB_REF}."
-          exit 1
-        fi
-
-    - name: Require Docker credentials
-      shell: bash
-      env:
-        DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
-        DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
-      run: |
-        set -euo pipefail
-        if [[ -z "$DOCKER_USERNAME" || -z "$DOCKER_PASSWORD" ]]; then
-          echo "Docker credentials are required before a release can start."
+        if [[ "${GITHUB_REF}" != "refs/heads/fork/main" ]]; then
+          echo "Releases must run from fork/main; selected ref is ${GITHUB_REF}."
           exit 1
         fi
 
@@ -127,20 +115,8 @@ jobs:
         set -euo pipefail
         TAG="${{ steps.tag.outputs.tag }}"
 
-        # develop stays pre-release; main is the stable channel.
-        if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
-          PRERELEASE_FLAG=""
-        else
-          PRERELEASE_FLAG="--prerelease"
-        fi
-
         if gh release view "$TAG" >/dev/null 2>&1; then
-          if [[ -z "$PRERELEASE_FLAG" ]]; then
-            echo "Promoting $TAG to stable."
-            gh release edit "$TAG" --prerelease=false --latest
-          else
-            echo "Release $TAG already exists."
-          fi
+          echo "Release $TAG already exists."
           exit 0
         fi
 
@@ -150,13 +126,15 @@ jobs:
           --title "Chaptarr $TAG" \
           --generate-notes \
           --verify-tag \
-          ${PRERELEASE_FLAG}
+          --latest
 
   # Images publish here and nowhere else, so merging PRs never ships an update.
   docker:
     needs: release
     uses: ./.github/workflows/docker-publish.yml
+    permissions:
+      contents: read
+      packages: write
     with:
       sha: ${{ needs.release.outputs.sha }}
       branch: ${{ github.ref_name }}
-    secrets: inherit

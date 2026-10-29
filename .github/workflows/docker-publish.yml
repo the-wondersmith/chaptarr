@@ -1,3 +1,4 @@
+---
 name: Docker Build and Publish
 
 # Never fires on its own. Only release.yml can call it after manual CI succeeds.
@@ -10,21 +11,17 @@ on:
       branch:
         required: true
         type: string
-    secrets:
-      DOCKER_USERNAME:
-        required: true
-      DOCKER_PASSWORD:
-        required: true
 
 env:
-  REGISTRY: docker.io
-  IMAGE_NAMES: robertlordhood/chaptarr chaptarr/chaptarr
+  REGISTRY: ghcr.io
+  IMAGE_NAME: the-wondersmith/chaptarr
 
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      packages: write
 
     steps:
     - name: Checkout repository
@@ -40,8 +37,8 @@ jobs:
       shell: bash
       run: |
         set -euo pipefail
-        if [[ "${{ inputs.branch }}" != "develop" && "${{ inputs.branch }}" != "main" ]]; then
-          echo "Docker publication requires branch=develop or branch=main."
+        if [[ "${{ inputs.branch }}" != "fork/main" ]]; then
+          echo "Docker publication requires branch=fork/main."
           exit 1
         fi
 
@@ -50,12 +47,12 @@ jobs:
           exit 1
         fi
 
-    - name: Log in to Docker Hub
+    - name: Log in to GitHub Container Registry
       uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
       with:
         registry: ${{ env.REGISTRY }}
-        username: ${{ secrets.DOCKER_USERNAME }}
-        password: ${{ secrets.DOCKER_PASSWORD }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
 
     - name: Generate Docker tags
       id: docker-tags
@@ -65,6 +62,7 @@ jobs:
 
         sha="$(git rev-parse HEAD)"
         branch="${{ inputs.branch }}"
+        image="${REGISTRY}/${IMAGE_NAME}"
         version="$(python3 -c "import json; print(json.load(open('package.json', encoding='utf-8'))['version'])")"
         release_tag="v${version}"
 
@@ -73,34 +71,18 @@ jobs:
           exit 1
         fi
 
-        tags=()
+        # A Docker tag cannot contain "/", so the branch tag is slugified. Derived
+        # from the input rather than hardcoded so widening the gate above is the
+        # only edit needed to publish another branch.
+        tags=("$image:${branch//\//-}" "$image:latest")
 
-        for name in ${IMAGE_NAMES}; do
-          image="${REGISTRY}/${name}"
+        # Exact versions only. No rolling major/minor tags: every Chaptarr release
+        # so far is 0.9.x, so a ":0.9" tag would just be a second "latest".
+        # Users pin fork-main, latest, or an exact version.
+        while IFS= read -r tag; do
+          tags+=("$image:${tag#v}")
+        done < <(git tag --points-at "$sha" 'v*' | sort -V)
 
-          if [[ "$branch" == "main" || "$branch" == "develop" ]]; then
-            tags+=("$image:$branch")
-          fi
-
-          if [[ "$branch" == "main" ]]; then
-            tags+=("$image:latest")
-          fi
-
-          # Exact versions only. No rolling major/minor tags: every Chaptarr release
-          # so far is 0.9.x, so a ":0.9" tag would just be a second "latest" that
-          # also tracks develop. Users pin main, develop, or an exact version.
-          while IFS= read -r tag; do
-            tags+=("$image:${tag#v}")
-          done < <(git tag --points-at "$sha" 'v*' | sort -V)
-        done
-
-        if [[ "${#tags[@]}" -eq 0 ]]; then
-          echo "No Docker tags generated for $sha; skipping publish."
-          echo "has_tags=false" >> "$GITHUB_OUTPUT"
-          exit 0
-        fi
-
-        echo "has_tags=true" >> "$GITHUB_OUTPUT"
         {
           echo 'tags<<EOF'
           printf '%s\n' "${tags[@]}" | sort -u
@@ -108,12 +90,11 @@ jobs:
         } >> "$GITHUB_OUTPUT"
 
     - name: Build and push Docker image
-      if: steps.docker-tags.outputs.has_tags == 'true'
       uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25
       with:
         context: .
         file: ./Dockerfile.cross
-        platforms: linux/amd64,linux/arm64,linux/arm/v7
+        platforms: linux/amd64,linux/arm64
         push: true
         tags: ${{ steps.docker-tags.outputs.tags }}
         labels: |
