@@ -221,7 +221,14 @@ namespace NzbDrone.Core.MediaFiles
             lock (_sync)
             {
                 var job = _repository.FindByDownloadId(downloadId);
-                if (job != null && IsInFlight(job.Status))
+
+                // Only `Converting`/`Cancelling` own a live `ffmpeg` process.
+                // `Queued` and `ReadyToImport` are both passive, and a `ReadyToImport`
+                // job is exactly what a retry needs to clear - the import it was
+                // waiting on failed, so the artifact has to be rebuilt. Refusing
+                // the reset there deadlocks `RetryFailedImport` against the job
+                // it was trying to rescue.
+                if (job != null && (HasRunningWork(job.Status) || _activeConversions.ContainsKey(downloadId)))
                 {
                     throw new InvalidOperationException("An active conversion job must be cancelled before it can be reset.");
                 }
@@ -895,6 +902,16 @@ namespace NzbDrone.Core.MediaFiles
             return status == ConversionJobStatus.Queued ||
                    status == ConversionJobStatus.Converting ||
                    status == ConversionJobStatus.ReadyToImport ||
+                   status == ConversionJobStatus.Cancelling;
+        }
+
+        // The subset of `IsInFlight` that has work to interrupt. `Cancel()` still
+        // needs the wider definition - cancelling a `Queued` or `ReadyToImport` job
+        // is meaningful, but a reset only has to refuse while `ffmpeg` is actually
+        // running.
+        private static bool HasRunningWork(ConversionJobStatus status)
+        {
+            return status == ConversionJobStatus.Converting ||
                    status == ConversionJobStatus.Cancelling;
         }
 
