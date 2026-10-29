@@ -372,6 +372,77 @@ namespace Chaptarr.Core.Test.MediaFiles
             }
         }
 
+        [TestCase(ConversionJobStatus.Queued)]
+        [TestCase(ConversionJobStatus.ReadyToImport)]
+        public void reset_should_clear_job_that_is_not_running_and_keep_the_artifact(ConversionJobStatus status)
+        {
+            // RetryFailedImport resets before it moves the download back to ImportPending.
+            // Refusing the reset for a passive job deadlocked the retry against the very
+            // job it was trying to rescue, and the item could never leave ImportBlocked.
+            var tempDir = Path.Combine(TestContext.CurrentContext.WorkDirectory, $"conversion-job-reset-{Guid.NewGuid():N}");
+            Directory.CreateDirectory(tempDir);
+            var request = CreateRequest(tempDir, "reset-download");
+            var repository = CreateRepository(Path.Combine(tempDir, "jobs.db"));
+            var service = CreateService(repository, new UnusedConversionService());
+
+            try
+            {
+                service.Enqueue(request);
+                if (status != ConversionJobStatus.Queued)
+                {
+                    var job = repository.FindByDownloadId(request.DownloadId);
+                    job.Status = status;
+                    repository.Update(job);
+                }
+
+                Assert.DoesNotThrow(() => service.Reset(request.DownloadId));
+
+                Assert.That(repository.FindByDownloadId(request.DownloadId), Is.Null);
+
+                // Unlike Cancel, Reset leaves the work root alone so a converted M4B can
+                // be reused by the retry instead of being rebuilt from scratch.
+                Assert.That(Directory.Exists(request.WorkRoot), Is.True);
+            }
+            finally
+            {
+                SqliteConnection.ClearAllPools();
+                if (Directory.Exists(tempDir))
+                {
+                    Directory.Delete(tempDir, recursive: true);
+                }
+            }
+        }
+
+        [Test]
+        public void reset_should_refuse_while_a_conversion_is_running()
+        {
+            var tempDir = Path.Combine(TestContext.CurrentContext.WorkDirectory, $"conversion-job-reset-running-{Guid.NewGuid():N}");
+            Directory.CreateDirectory(tempDir);
+            var request = CreateRequest(tempDir, "reset-running-download");
+            var repository = CreateRepository(Path.Combine(tempDir, "jobs.db"));
+            var converter = new BlockingConversionService();
+            var service = CreateService(repository, converter);
+
+            try
+            {
+                service.Handle(new ApplicationStartedEvent());
+                service.Enqueue(request);
+                Assert.That(converter.Started.Wait(TimeSpan.FromSeconds(2)), Is.True);
+
+                Assert.Throws<InvalidOperationException>(() => service.Reset(request.DownloadId));
+                Assert.That(repository.FindByDownloadId(request.DownloadId), Is.Not.Null);
+            }
+            finally
+            {
+                service.Handle(new ApplicationShutdownRequested());
+                SqliteConnection.ClearAllPools();
+                if (Directory.Exists(tempDir))
+                {
+                    Directory.Delete(tempDir, recursive: true);
+                }
+            }
+        }
+
         [Test]
         public void startup_should_requeue_conversion_without_valid_artifact_and_run_it()
         {
