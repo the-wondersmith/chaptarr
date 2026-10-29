@@ -38,6 +38,8 @@ namespace NzbDrone.Core.MediaFiles
 
     public class M4bConversionService : IM4bConversionService
     {
+        private static readonly TimeSpan HeartbeatInterval = TimeSpan.FromSeconds(15);
+
         private readonly IExternalToolsService _externalTools;
         private readonly IDiskProvider _diskProvider;
         private readonly IConfigService _configService;
@@ -102,8 +104,7 @@ namespace NzbDrone.Core.MediaFiles
                 var arguments = BuildM4bToolArguments(inputFiles, outputFile, conversionOptions, tagOptions);
                 var progressParser = new M4bToolProgressParser(inputFiles.Length);
                 var progressLock = new object();
-                decimal? lastProgress = null;
-                var lastProgressPublish = DateTime.MinValue;
+                var progressState = new ProgressPublishState();
 
                 _logger.Debug("Starting M4B conversion: {0} files -> {1}", inputFiles.Length, outputFile);
                 _logger.Debug("m4b-tool arguments: {0}", string.Join(" ", arguments));
@@ -111,18 +112,23 @@ namespace NzbDrone.Core.MediaFiles
                 PublishProgressUpdate(conversionOptions, new ConversionProgressUpdate
                 {
                     Progress = 1m,
-                    Message = string.Format(CultureInfo.InvariantCulture, "Converting to M4B - 0 of {0}", inputFiles.Length),
+                    Message = M4bToolProgressParser.FormatStepMessage(0, inputFiles.Length),
                     CurrentFile = 0,
                     TotalFiles = inputFiles.Length
                 });
-                lastProgress = 1m;
-                lastProgressPublish = DateTime.UtcNow;
+                progressState.LastProgress = 1m;
+                progressState.LastPublish = DateTime.UtcNow;
 
-                var toolResult = _externalTools.ExecuteM4bToolDetailed(
-                    arguments,
-                    timeoutMs: GetConversionTimeoutMs(conversionOptions),
-                    outputHandler: chunk => PublishProgress(chunk, conversionOptions, progressParser, progressLock, ref lastProgress, ref lastProgressPublish),
-                    cancellationToken: conversionOptions.CancellationToken);
+                ExternalToolResult toolResult;
+                using (StartProgressHeartbeat(conversionOptions, outputFile, progressLock, progressState))
+                {
+                    toolResult = _externalTools.ExecuteM4bToolDetailed(
+                        arguments,
+                        timeoutMs: GetConversionTimeoutMs(conversionOptions),
+                        outputHandler: chunk => PublishProgress(chunk, conversionOptions, progressParser, progressLock, progressState),
+                        cancellationToken: conversionOptions.CancellationToken);
+                }
+
                 if (conversionOptions.CancellationToken.IsCancellationRequested && toolResult != null && !toolResult.Cancelled)
                 {
                     toolResult.Cancelled = true;
@@ -485,8 +491,7 @@ namespace NzbDrone.Core.MediaFiles
             ConversionOptions options,
             M4bToolProgressParser progressParser,
             object progressLock,
-            ref decimal? lastProgress,
-            ref DateTime lastProgressPublish)
+            ProgressPublishState state)
         {
             if (options.ProgressHandler == null)
             {
@@ -504,20 +509,122 @@ namespace NzbDrone.Core.MediaFiles
 
                 var now = DateTime.UtcNow;
                 var progress = update.Progress.Value;
-                var changedEnough = !lastProgress.HasValue || Math.Abs(progress - lastProgress.Value) >= 1m;
-                var oldEnough = now - lastProgressPublish >= TimeSpan.FromSeconds(2);
-                var terminal = progress >= 94.9m && (!lastProgress.HasValue || lastProgress.Value < 94.9m);
+                var changedEnough = !state.LastProgress.HasValue || Math.Abs(progress - state.LastProgress.Value) >= 1m;
+                var oldEnough = now - state.LastPublish >= TimeSpan.FromSeconds(2);
+                var terminal = progress >= 94.9m && (!state.LastProgress.HasValue || state.LastProgress.Value < 94.9m);
 
                 if (!changedEnough && !oldEnough && !terminal)
                 {
                     return;
                 }
 
-                lastProgress = progress;
-                lastProgressPublish = now;
+                state.LastProgress = progress;
+                state.LastPublish = now;
+                state.ToolAdvanced |= changedEnough;
             }
 
             PublishProgressUpdate(options, update);
+        }
+
+        // m4b-tool reports task-queue granularity only: one input file is one task, so a
+        // single-file conversion sits at "0 of 1" for its entire run and is visually
+        // indistinguishable from a hung process - a 643 MB MP3 took 23 minutes pinned at 1%.
+        // The bytes accumulating in the work folder are the one liveness signal that always
+        // exists, whatever the tool chooses to print, so publish them whenever the tool
+        // itself has gone quiet. A tool that is reporting real movement is never overridden.
+        private IDisposable StartProgressHeartbeat(
+            ConversionOptions options,
+            string outputFile,
+            object progressLock,
+            ProgressPublishState state)
+        {
+            if (options?.ProgressHandler == null)
+            {
+                return null;
+            }
+
+            var workFolder = options.TempDirectory;
+
+            return new Timer(
+                _ => PublishHeartbeat(options, workFolder, outputFile, progressLock, state),
+                null,
+                HeartbeatInterval,
+                HeartbeatInterval);
+        }
+
+        private void PublishHeartbeat(
+            ConversionOptions options,
+            string workFolder,
+            string outputFile,
+            object progressLock,
+            ProgressPublishState state)
+        {
+            try
+            {
+                var written = GetBytesWritten(workFolder, outputFile);
+
+                if (written <= 0)
+                {
+                    return;
+                }
+
+                ConversionProgressUpdate update;
+                lock (progressLock)
+                {
+                    // Stand down for one interval after the tool reports actual movement:
+                    // "12 of 70" is strictly better information than a byte count.
+                    if (state.ToolAdvanced)
+                    {
+                        state.ToolAdvanced = false;
+                        state.HeartbeatBytes = written;
+                        return;
+                    }
+
+                    if (written <= state.HeartbeatBytes)
+                    {
+                        return;
+                    }
+
+                    state.HeartbeatBytes = written;
+                    state.LastPublish = DateTime.UtcNow;
+
+                    update = new ConversionProgressUpdate
+                    {
+                        // Deliberately not advancing Progress: there is no signal to base a
+                        // percentage on, and inventing one would only make the bar lie.
+                        Progress = state.LastProgress ?? 1m,
+                        Message = M4bToolProgressParser.FormatBytesWrittenMessage(written)
+                    };
+                }
+
+                PublishProgressUpdate(options, update);
+            }
+            catch (Exception ex)
+            {
+                _logger.Debug(ex, "M4B conversion progress heartbeat failed");
+            }
+        }
+
+        private long GetBytesWritten(string workFolder, string outputFile)
+        {
+            // The work folder holds m4b-tool's in-flight "N-converting.m4b" parts, which is
+            // where the bytes actually land while a conversion runs; the output file only
+            // appears at the end. Fall back to the output file when no private work folder
+            // was supplied rather than sizing whatever directory it happens to sit in.
+            if (workFolder.IsNotNullOrWhiteSpace() && _diskProvider.FolderExists(workFolder))
+            {
+                return _diskProvider.GetFolderSize(workFolder);
+            }
+
+            return _diskProvider.FileExists(outputFile) ? _diskProvider.GetFileSize(outputFile) : 0L;
+        }
+
+        private sealed class ProgressPublishState
+        {
+            public decimal? LastProgress { get; set; }
+            public DateTime LastPublish { get; set; } = DateTime.MinValue;
+            public bool ToolAdvanced { get; set; }
+            public long HeartbeatBytes { get; set; }
         }
 
         private void PublishProgressUpdate(ConversionOptions options, ConversionProgressUpdate update)
@@ -971,6 +1078,7 @@ namespace NzbDrone.Core.MediaFiles
     {
         private const int MaxBufferLength = 8192;
         private const decimal ToolProgressCeiling = 95m;
+        private const string ConvertingMessage = "Converting to M4B";
         private static readonly Regex AnsiRegex = new(@"\x1B\[[0-?]*[ -/]*[@-~]", RegexOptions.Compiled);
         private static readonly Regex PercentRegex = new(@"(?<percent>\d{1,3}(?:\.\d+)?)\s*%", RegexOptions.Compiled);
         private static readonly Regex StepRegex = new(@"(?<!\d)(?<current>\d{1,5})\s*/\s*(?<total>\d{1,5})(?!\d)", RegexOptions.Compiled);
@@ -1177,10 +1285,32 @@ namespace NzbDrone.Core.MediaFiles
                     return "Finalizing M4B";
                 }
 
-                return string.Format(CultureInfo.InvariantCulture, "Converting to M4B - {0} of {1}", currentStep.Value, totalSteps.Value);
+                return FormatStepMessage(currentStep.Value, totalSteps.Value);
             }
 
-            return string.Format(CultureInfo.InvariantCulture, "Converting to M4B - {0:0.#}%", progress);
+            return string.Format(CultureInfo.InvariantCulture, "{0} - {1:0.#}%", ConvertingMessage, progress);
+        }
+
+        // A one-file conversion is a one-task queue, so this counter is frozen at "0 of 1"
+        // from start to finish. Drop it rather than show a number that never moves; the
+        // byte-count heartbeat supplies the liveness signal in its place.
+        internal static string FormatStepMessage(int currentStep, int totalSteps)
+        {
+            return totalSteps <= 1
+                ? ConvertingMessage
+                : string.Format(CultureInfo.InvariantCulture, "{0} - {1} of {2}", ConvertingMessage, currentStep, totalSteps);
+        }
+
+        internal static string FormatBytesWrittenMessage(long bytes)
+        {
+            const decimal megabyte = 1024m * 1024m;
+            var megabytes = bytes / megabyte;
+
+            var size = megabytes >= 1024m
+                ? string.Format(CultureInfo.InvariantCulture, "{0:0.0} GB", megabytes / 1024m)
+                : string.Format(CultureInfo.InvariantCulture, "{0:0} MB", megabytes);
+
+            return string.Format(CultureInfo.InvariantCulture, "{0} - {1} written", ConvertingMessage, size);
         }
     }
 
