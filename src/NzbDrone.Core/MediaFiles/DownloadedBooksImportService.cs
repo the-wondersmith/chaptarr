@@ -1285,7 +1285,7 @@ namespace NzbDrone.Core.MediaFiles
         {
             var reason = $"Download path is not accessible to Chaptarr: {path}. Check the download client path, remote path mapping, and container volume mappings.";
             var localBook = new LocalBook { Path = path };
-            var rejection = CreateMissingMediaRejection(reason, downloadClientItem);
+            var rejection = CreateMissingMediaRejection(reason, downloadClientItem, retryWhenUnverified: true);
             return new ImportResult(new ImportDecision<LocalBook>(localBook, rejection), reason);
         }
 
@@ -1298,9 +1298,9 @@ namespace NzbDrone.Core.MediaFiles
             return new ImportResult(new ImportDecision<LocalBook>(localBook, rejection), reason);
         }
 
-        private Rejection CreateMissingMediaRejection(string reason, DownloadClientItem downloadClientItem)
+        private Rejection CreateMissingMediaRejection(string reason, DownloadClientItem downloadClientItem, bool retryWhenUnverified = false)
         {
-            var rejection = new Rejection(reason, GetMissingMediaRejectionType(downloadClientItem));
+            var rejection = new Rejection(reason, GetMissingMediaRejectionType(downloadClientItem, retryWhenUnverified));
             if (rejection.Type == RejectionType.Temporary)
             {
                 rejection.Category = MissingAuthoritativeMediaFilesRejectionCategory;
@@ -1309,11 +1309,20 @@ namespace NzbDrone.Core.MediaFiles
             return rejection;
         }
 
-        private RejectionType GetMissingMediaRejectionType(DownloadClientItem downloadClientItem)
+        private RejectionType GetMissingMediaRejectionType(DownloadClientItem downloadClientItem, bool retryWhenUnverified = false)
         {
-            return GetMissingAuthoritativeMediaPaths(downloadClientItem).Count > 0 ?
-                RejectionType.Temporary :
-                RejectionType.Permanent;
+            if (GetMissingAuthoritativeMediaPaths(downloadClientItem).Count > 0)
+            {
+                return RejectionType.Temporary;
+            }
+
+            // Without an authoritative file list there is no way to tell a genuinely
+            // absent download from a mount that has not settled yet. Calling that
+            // permanent blocks the item on its first attempt and forces a manual retry,
+            // so callers opt into the bounded retry
+            // (MissingAuthoritativeMediaFileBlockThreshold) when the failure is "path
+            // unreadable" rather than "path readable but holds nothing to import".
+            return retryWhenUnverified ? RejectionType.Temporary : RejectionType.Permanent;
         }
 
         private List<string> GetMissingAuthoritativeMediaPaths(DownloadClientItem downloadClientItem)
