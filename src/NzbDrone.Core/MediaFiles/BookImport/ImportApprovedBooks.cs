@@ -347,7 +347,10 @@ namespace NzbDrone.Core.MediaFiles.BookImport
                 _logger.Debug("[UPGRADE-CHECK] replaceExisting={0}, existingFiles.Any()={1}, filesToReplace={2}, UpgradeAllowed={3}",
                     replaceExisting, existingFiles.Any(), filesToReplace, qualityProfile?.UpgradeAllowed ?? true);
 
-                    var conversionResult = ConvertBookGroupIfNeeded(bookDecisions, book, author, downloadClientItem, replaceExisting, hasRejectedTrackedDownloadDecisions, downloadForced);
+                    // Resolved before the call: conversion replaces bookDecisions with the generated
+                    // file, so the source paths the id is derived from are gone afterwards.
+                    var conversionId = ResolveConversionId(downloadClientItem, bookDecisions, book);
+                    var conversionResult = ConvertBookGroupIfNeeded(bookDecisions, book, author, downloadClientItem, conversionId, replaceExisting, hasRejectedTrackedDownloadDecisions, downloadForced);
                     conversionWorkFolder = conversionResult.WorkFolder;
                     if (!conversionResult.Failed && conversionResult.Decisions == null)
                     {
@@ -375,7 +378,7 @@ namespace NzbDrone.Core.MediaFiles.BookImport
                     }
 
                     bookDecisions = conversionResult.Decisions;
-                    var conversionDownloadId = bookDecisions.Any(d => d.Item?.IsGeneratedConversion == true) ? downloadClientItem?.DownloadId : null;
+                    var conversionDownloadId = bookDecisions.Any(d => d.Item?.IsGeneratedConversion == true) ? conversionId : null;
 
                     Book newBookInstance = null;
                     Edition newEdition = null;
@@ -1514,16 +1517,42 @@ namespace NzbDrone.Core.MediaFiles.BookImport
                 dramatizedReason);
         }
 
+            // A conversion needs a stable key even when the import has no download-client item: it names
+            // the work root (so a retried import still finds a retained artifact) and it is what the
+            // tracker, the queue row and the cancel endpoint all address the conversion by. Derived from
+            // the book and its ordered source paths so the same import always resolves to the same id.
+            private static string ResolveConversionId(DownloadClientItem downloadClientItem, List<ImportDecision<LocalBook>> bookDecisions, Book book)
+            {
+                if (downloadClientItem?.DownloadId.IsNotNullOrWhiteSpace() == true)
+                {
+                    return downloadClientItem.DownloadId;
+                }
+
+                var sources = (bookDecisions ?? new List<ImportDecision<LocalBook>>())
+                    .Select(d => d.Item?.Path)
+                    .Where(p => p.IsNotNullOrWhiteSpace())
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .OrderBy(p => p, NaturalSortComparer.Instance);
+
+                var key = $"{book?.Id}|{string.Join("|", sources)}";
+
+                return "local-" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(key)))[..16].ToLowerInvariant();
+            }
+
             private (List<ImportDecision<LocalBook>> Decisions, string WorkFolder, bool Failed, string Error) ConvertBookGroupIfNeeded(
                 List<ImportDecision<LocalBook>> bookDecisions,
                 Book book,
                 Author author,
                 DownloadClientItem downloadClientItem,
+                string conversionId,
                 bool replaceExisting,
                 bool hasRejectedTrackedDownloadDecisions,
                 bool downloadForced)
             {
-                if (downloadClientItem == null || bookDecisions == null || bookDecisions.Count == 0)
+                // Deliberately does not require a download-client item. An import that has none - a
+                // folder scan, or a manual import - converts exactly like a tracked one; only the
+                // detached-job route below needs a real download id.
+                if (bookDecisions == null || bookDecisions.Count == 0 || conversionId.IsNullOrWhiteSpace())
                 {
                     return (bookDecisions, null, false, null);
                 }
@@ -1570,18 +1599,42 @@ namespace NzbDrone.Core.MediaFiles.BookImport
                 if (hasRejectedTrackedDownloadDecisions)
                 {
                     var error = "Conversion skipped because one or more files in the completed download did not match a local book. Fix the match failure, then retry import.";
-                    _conversionTrackingService?.Fail(downloadClientItem.DownloadId, error);
+                    _conversionTrackingService?.Fail(conversionId, error);
                     PublishConversionFailed(first, inputFiles, book, author, new QualityModel(Qualities.Quality.M4B), null, error, downloadClientItem);
                     return (bookDecisions, null, true, error);
                 }
 
                 var convertedQuality = new QualityModel(Qualities.Quality.M4B);
-                var useDetachedJob = _conversionJobService != null && bookDecisions.All(decision => decision.Item?.IsManualImport != true);
+
+                // The detached route hands the work to ConversionJobService and relies on
+                // ProcessMonitoredDownloadsCommand to come back and import it - and that command only
+                // ever walks tracked downloads. Without a real download id there is nothing for it to
+                // walk, so the job would sit at ready-to-import forever. Convert inline instead.
+                // A non-null item with a blank DownloadId counts as untracked: Enqueue rejects it.
+                var isTrackedDownload = downloadClientItem?.DownloadId.IsNotNullOrWhiteSpace() == true;
+                var useDetachedJob = _conversionJobService != null &&
+                                     isTrackedDownload &&
+                                     bookDecisions.All(decision => decision.Item?.IsManualImport != true);
+
+                if (!isTrackedDownload)
+                {
+                    // No TrackedDownload means QueueService cannot derive a row for this conversion.
+                    // Hand it the detail it needs to synthesise one, or the convert runs invisibly.
+                    _conversionTrackingService?.RegisterUntracked(conversionId, new UntrackedConversionContext
+                    {
+                        Author = author,
+                        Book = book,
+                        Title = book?.Title,
+                        Quality = first?.Quality,
+                        Size = bookDecisions.Sum(d => d.Item?.Size ?? 0),
+                        Added = DateTime.UtcNow
+                    });
+                }
 
                 if (!_m4bConversionService.CanConvert(inputFiles))
                 {
                     var error = "Conversion to M4B is enabled, but one or more files are not compatible with the M4B converter.";
-                    _conversionTrackingService?.Fail(downloadClientItem.DownloadId, error);
+                    _conversionTrackingService?.Fail(conversionId, error);
                     PublishConversionFailed(first, inputFiles, book, author, convertedQuality, null, error, downloadClientItem);
                     return (bookDecisions, null, true, error);
                 }
@@ -1598,7 +1651,7 @@ namespace NzbDrone.Core.MediaFiles.BookImport
                     if (finalDestinationFolder.IsNullOrWhiteSpace())
                     {
                         var error = "Unable to determine destination folder for converted M4B.";
-                        _conversionTrackingService?.Fail(downloadClientItem.DownloadId, error);
+                        _conversionTrackingService?.Fail(conversionId, error);
                         PublishConversionFailed(first, inputFiles, book, author, convertedQuality, null, error, downloadClientItem);
                         return (bookDecisions, null, true, error);
                     }
@@ -1606,12 +1659,12 @@ namespace NzbDrone.Core.MediaFiles.BookImport
                     var destinationConflict = GetConversionDestinationConflictReason(finalDestinationPath, book, qualityProfile, replaceExisting, downloadForced);
                     if (destinationConflict.IsNotNullOrWhiteSpace())
                     {
-                        _conversionTrackingService?.Fail(downloadClientItem.DownloadId, destinationConflict);
+                        _conversionTrackingService?.Fail(conversionId, destinationConflict);
                         PublishConversionFailed(first, inputFiles, book, author, convertedQuality, null, destinationConflict, downloadClientItem);
                         return (bookDecisions, null, true, destinationConflict);
                     }
 
-                    var downloadFolderName = GetSafeConvertedFileName(downloadClientItem.DownloadId ?? Guid.NewGuid().ToString("N"));
+                    var downloadFolderName = GetSafeConvertedFileName(conversionId);
                     workRoot = Path.Combine(finalDestinationFolder, ".chaptarr-conversions", downloadFolderName);
                     workFolder = Path.Combine(workRoot, Guid.NewGuid().ToString("N"));
                     CleanupExpiredConversionArtifacts(Path.GetDirectoryName(workRoot), TimeSpan.FromDays(7));
@@ -1640,28 +1693,28 @@ namespace NzbDrone.Core.MediaFiles.BookImport
 
                     if (TryFindReusableConversionArtifact(workRoot, inputFiles, convertedQuality, tagOptions, audioBitrate, audioChannels, out var reusableOutputPath))
                     {
-                        _conversionTrackingService?.Start(downloadClientItem.DownloadId, Qualities.Quality.M4B.Id, Qualities.Quality.M4B.Name, "Using retained M4B");
-                        _conversionTrackingService?.Progress(downloadClientItem.DownloadId, 97m, "Using retained M4B");
+                        _conversionTrackingService?.Start(conversionId, Qualities.Quality.M4B.Id, Qualities.Quality.M4B.Name, "Using retained M4B");
+                        _conversionTrackingService?.Progress(conversionId, 97m, "Using retained M4B");
                         var reusableLocalBook = CreateGeneratedConversionLocalBook(first, bookDecisions, reusableOutputPath, inputFiles, convertedQuality, tagOptions);
                         _logger.Info("[CONVERSION] Reusing retained converted M4B for '{0}': {1}", book.Title, reusableOutputPath);
                         return (new List<ImportDecision<LocalBook>> { new ImportDecision<LocalBook>(reusableLocalBook) }, workRoot, false, null);
                     }
 
-                    var existingJob = useDetachedJob ? _conversionJobService.Get(downloadClientItem.DownloadId) : null;
+                    var existingJob = useDetachedJob ? _conversionJobService.Get(conversionId) : null;
                     if (existingJob != null)
                     {
                         if (existingJob.Status == ConversionJobStatus.Queued ||
                             existingJob.Status == ConversionJobStatus.Converting ||
                             existingJob.Status == ConversionJobStatus.Cancelling)
                         {
-                            _logger.Debug("[CONVERSION] Download {0} already has an in-flight conversion job; leaving import pending.", downloadClientItem.DownloadId);
+                            _logger.Debug("[CONVERSION] Download {0} already has an in-flight conversion job; leaving import pending.", conversionId);
                             return (null, existingJob.WorkRoot ?? workRoot, false, null);
                         }
 
                         if (existingJob.Status == ConversionJobStatus.ReadyToImport)
                         {
                             var error = "The completed conversion artifact is no longer valid for the current source files. Retry import to rebuild it.";
-                            _conversionJobService.Fail(downloadClientItem.DownloadId, error);
+                            _conversionJobService.Fail(conversionId, error);
                             PublishConversionFailed(first, inputFiles, book, author, convertedQuality, existingJob.OutputPath, error, downloadClientItem);
                             return (bookDecisions, null, true, error);
                         }
@@ -1677,7 +1730,7 @@ namespace NzbDrone.Core.MediaFiles.BookImport
                     var estimate = EstimateConversionWorkspace(inputFiles);
                     if (!HasEnoughConversionWorkspaceSpace(finalDestinationFolder, estimate, out var freeSpaceError))
                     {
-                        _conversionTrackingService?.Fail(downloadClientItem.DownloadId, freeSpaceError);
+                        _conversionTrackingService?.Fail(conversionId, freeSpaceError);
                         PublishConversionFailed(first, inputFiles, book, author, convertedQuality, outputPath, freeSpaceError, downloadClientItem);
                         return (bookDecisions, null, true, freeSpaceError);
                     }
@@ -1693,13 +1746,13 @@ namespace NzbDrone.Core.MediaFiles.BookImport
                         if (sources == null || sources.Count == 0)
                         {
                             var error = "Unable to capture stable source-file identities for M4B conversion.";
-                            _conversionJobService.Fail(downloadClientItem.DownloadId, error);
+                            _conversionJobService.Fail(conversionId, error);
                             return (bookDecisions, workRoot, true, error);
                         }
 
                         _conversionJobService.Enqueue(new ConversionJobRequest
                         {
-                            DownloadId = downloadClientItem.DownloadId,
+                            DownloadId = conversionId,
                             BookTitle = book.Title,
                             WorkRoot = workRoot,
                             WorkFolder = workFolder,
@@ -1729,13 +1782,13 @@ namespace NzbDrone.Core.MediaFiles.BookImport
                     var conversionSlotAcquired = false;
                     ConversionResult result;
 
-                    _conversionTrackingService?.Start(downloadClientItem.DownloadId, Qualities.Quality.M4B.Id, Qualities.Quality.M4B.Name, "Waiting for M4B conversion slot");
-                    _conversionTrackingService?.RegisterCancellation(downloadClientItem.DownloadId, conversionCancellation);
+                    _conversionTrackingService?.Start(conversionId, Qualities.Quality.M4B.Id, Qualities.Quality.M4B.Name, "Waiting for M4B conversion slot");
+                    _conversionTrackingService?.RegisterCancellation(conversionId, conversionCancellation);
                     try
                     {
                         conversionSemaphore.Wait(conversionCancellation.Token);
                         conversionSlotAcquired = true;
-                        _conversionTrackingService?.Progress(downloadClientItem.DownloadId, 1m, "Converting to M4B");
+                        _conversionTrackingService?.Progress(conversionId, 1m, "Converting to M4B");
 
                         result = _m4bConversionService.ConvertToM4b(conversionInputFiles, outputPath, new ConversionOptions
                         {
@@ -1747,7 +1800,7 @@ namespace NzbDrone.Core.MediaFiles.BookImport
                             FfmpegThreads = threadPlan.FfmpegThreads,
                             TagOptions = tagOptions,
                             CancellationToken = conversionCancellation.Token,
-                            ProgressHandler = update => _conversionTrackingService?.Progress(downloadClientItem.DownloadId, update.Progress, update.Message)
+                            ProgressHandler = update => _conversionTrackingService?.Progress(conversionId, update.Progress, update.Message)
                         });
                     }
                     finally
@@ -1767,7 +1820,7 @@ namespace NzbDrone.Core.MediaFiles.BookImport
                             error = $"{targetQualityName} conversion was cancelled.";
                             _logger.Info("[CONVERSION] Cancelled {0} conversion for '{1}'. Import stopped.", targetQualityName, book.Title);
                             CleanupConversionWorkFolder(workRoot);
-                            _conversionTrackingService?.Cancelled(downloadClientItem.DownloadId, error);
+                            _conversionTrackingService?.Cancelled(conversionId, error);
                             return (bookDecisions, null, true, error);
                         }
 
@@ -1777,7 +1830,7 @@ namespace NzbDrone.Core.MediaFiles.BookImport
                             error = $"{error} Converted file retained at: {outputPath}";
                         }
 
-                        _conversionTrackingService?.Fail(downloadClientItem.DownloadId, error);
+                        _conversionTrackingService?.Fail(conversionId, error);
                         PublishConversionFailed(first, inputFiles, book, author, convertedQuality, outputPath, error, downloadClientItem);
                         if (!result.RetainOutputOnFailure)
                         {
@@ -1787,12 +1840,12 @@ namespace NzbDrone.Core.MediaFiles.BookImport
                         return (bookDecisions, null, true, error);
                     }
 
-                    _conversionTrackingService?.Progress(downloadClientItem.DownloadId, 97m, "Finalizing M4B");
+                    _conversionTrackingService?.Progress(conversionId, 97m, "Finalizing M4B");
 
                     WriteConversionArtifactManifest(workFolder, outputPath, inputFiles, convertedQuality, tagOptions, audioBitrate, audioChannels);
                     var convertedLocalBook = CreateGeneratedConversionLocalBook(first, bookDecisions, outputPath, inputFiles, convertedQuality, tagOptions);
 
-                    _conversionTrackingService?.Progress(downloadClientItem.DownloadId, 98m, "Preparing import");
+                    _conversionTrackingService?.Progress(conversionId, 98m, "Preparing import");
                     _logger.Info("[CONVERSION] Converted {0} source files to M4B for '{1}': {2}", inputFiles.Length, book.Title, outputPath);
 
                     return (new List<ImportDecision<LocalBook>> { new ImportDecision<LocalBook>(convertedLocalBook) }, workRoot, false, null);
@@ -1803,13 +1856,13 @@ namespace NzbDrone.Core.MediaFiles.BookImport
                     var error = $"{targetQualityName} conversion was cancelled.";
                     _logger.Info("[CONVERSION] Cancelled {0} conversion for '{1}'. Import stopped.", targetQualityName, book.Title);
                     CleanupConversionWorkFolder(workRoot);
-                    _conversionTrackingService?.Cancelled(downloadClientItem.DownloadId, error);
+                    _conversionTrackingService?.Cancelled(conversionId, error);
                     return (bookDecisions, null, true, error);
                 }
                 catch (Exception ex)
                 {
                     _logger.Error(ex, "[CONVERSION] Failed converting files to M4B for '{0}'", book.Title);
-                    _conversionTrackingService?.Fail(downloadClientItem.DownloadId, ex.Message);
+                    _conversionTrackingService?.Fail(conversionId, ex.Message);
                     PublishConversionFailed(first, inputFiles, book, author, convertedQuality, outputPath, "M4B conversion failed: " + ex.Message, downloadClientItem);
                     CleanupConversionWorkFolder(workRoot ?? workFolder);
                     return (bookDecisions, null, true, "M4B conversion failed: " + ex.Message);

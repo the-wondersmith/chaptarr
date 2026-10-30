@@ -611,12 +611,24 @@ namespace Chaptarr.Core.Test.MediaFiles
             public void Complete(string downloadId)
             {
                 CompletedDownloadId = downloadId;
-                Job.Status = ConversionJobStatus.Completed;
+
+                // Production tolerates being asked to settle a conversion it never enqueued -
+                // an untracked conversion runs inline and never creates a job.
+                if (Job != null)
+                {
+                    Job.Status = ConversionJobStatus.Completed;
+                }
             }
 
             public void Fail(string downloadId, string error)
             {
                 FailedDownloadId = downloadId;
+
+                if (Job == null)
+                {
+                    return;
+                }
+
                 Job.Status = ConversionJobStatus.Failed;
                 Job.Error = error;
             }
@@ -3400,6 +3412,316 @@ namespace Chaptarr.Core.Test.MediaFiles
                 if (Directory.Exists(tempDir))
                 {
                     Directory.Delete(tempDir, recursive: true);
+                }
+
+                if (Directory.Exists(destinationDir))
+                {
+                    Directory.Delete(destinationDir, recursive: true);
+                }
+            }
+        }
+
+        [Test]
+        public void should_convert_import_with_no_download_client_item()
+        {
+            var tempPath = Path.Combine(TestContext.CurrentContext.WorkDirectory, $"conversion-untracked-{Guid.NewGuid():N}.mp3");
+            var destinationDir = Path.Combine(TestContext.CurrentContext.WorkDirectory, $"conversion-untracked-destination-{Guid.NewGuid():N}");
+            var destinationPath = Path.Combine(destinationDir, "Black Sheep.m4b");
+            File.WriteAllText(tempPath, "fake mp3");
+
+            try
+            {
+                var (_, author, book, edition) = CreateAudiobookConversionGraph(70);
+                var conversion = new FailingM4bConversionService();
+                var mover = new StubMoveBookFiles { DestinationPath = destinationPath };
+
+                var service = new ImportApprovedBooks(
+                    new StubMediaFileService(),
+                    new StubMetadataTagService(),
+                    Proxy<IMediaInfoExtractor>(),
+                    Proxy<IAuthorService>(),
+                    Proxy<IBookService>(),
+                    CreateEditionService(new List<Edition> { edition }),
+                    Proxy<IRecycleBinProvider>(),
+                    Proxy<IExtraService>(),
+                    mover,
+                    Proxy<IHistoryService>(),
+                    Proxy<NzbDrone.Core.Download.History.IDownloadHistoryService>(),
+                    new NoOpEventAggregator(),
+                    Proxy<IManageCommandQueue>(),
+                    Proxy<ISeriesBookLinkService>(),
+                    Proxy<ISeriesService>(),
+                    Proxy<IQualityProfileService>(),
+                    conversion,
+                    LogManager.GetLogger("ImportApprovedBooksAdditionalCopyFixture"));
+
+                var localBook = new LocalBook
+                {
+                    Path = tempPath,
+                    Book = book,
+                    Author = author,
+                    Edition = edition,
+                    Quality = new QualityModel { Quality = Quality.MP3, Revision = new Revision() }
+                };
+
+                var results = service.Import(
+                    new List<ImportDecision<LocalBook>> { new(localBook) },
+                    replaceExisting: false,
+                    downloadClientItem: null,
+                    importMode: ImportMode.Move,
+                    cancellationToken: CancellationToken.None);
+
+                Assert.That(results, Has.Count.EqualTo(1));
+                Assert.That(results[0].Result, Is.EqualTo(ImportResultType.Skipped));
+                Assert.That(results[0].Errors.Single(), Is.EqualTo("synthetic conversion failure"));
+                Assert.That(conversion.ConvertCalls, Is.EqualTo(1));
+                Assert.That(conversion.LastInputFiles, Is.EquivalentTo(new[] { tempPath }));
+                Assert.That(conversion.LastOutputFile, Does.StartWith(Path.Combine(destinationDir, ".chaptarr-conversions")));
+                Assert.That(conversion.LastOutputFile, Does.EndWith("Black Sheep.m4b"));
+            }
+            finally
+            {
+                if (File.Exists(tempPath))
+                {
+                    File.Delete(tempPath);
+                }
+
+                if (Directory.Exists(destinationDir))
+                {
+                    Directory.Delete(destinationDir, recursive: true);
+                }
+            }
+        }
+
+        [Test]
+        public void should_convert_import_with_no_download_client_item_inline_instead_of_detaching()
+        {
+            var tempDir = Path.Combine(TestContext.CurrentContext.WorkDirectory, $"conversion-untracked-inline-{Guid.NewGuid():N}");
+            var destinationDir = Path.Combine(TestContext.CurrentContext.WorkDirectory, $"conversion-untracked-inline-destination-{Guid.NewGuid():N}");
+            var sourcePath = Path.Combine(tempDir, "Black Sheep.mp3");
+            var destinationPath = Path.Combine(destinationDir, "Black Sheep.m4b");
+            Directory.CreateDirectory(tempDir);
+            Directory.CreateDirectory(destinationDir);
+            File.WriteAllText(sourcePath, "fake mp3");
+
+            try
+            {
+                var (_, author, book, edition) = CreateAudiobookConversionGraph(71);
+                var (bookService, _) = CreateBookService(new List<Book> { book });
+                var conversion = new SuccessfulM4bConversionService();
+                var jobs = new RecordingConversionJobService();
+
+                var service = new ImportApprovedBooks(
+                    new StubMediaFileService(),
+                    new StubMetadataTagService(),
+                    new StubMediaInfoExtractor(),
+                    Proxy<IAuthorService>(),
+                    bookService,
+                    CreateEditionService(new List<Edition> { edition }),
+                    Proxy<IRecycleBinProvider>(),
+                    Proxy<IExtraService>(),
+                    new StubMoveBookFiles { DestinationPath = destinationPath },
+                    Proxy<IHistoryService>(),
+                    Proxy<NzbDrone.Core.Download.History.IDownloadHistoryService>(),
+                    new NoOpEventAggregator(),
+                    Proxy<IManageCommandQueue>(),
+                    Proxy<ISeriesBookLinkService>(),
+                    Proxy<ISeriesService>(),
+                    Proxy<IQualityProfileService>(),
+                    conversion,
+                    LogManager.GetLogger("ImportApprovedBooksAdditionalCopyFixture"),
+                    configService: CreateConfigService(concurrentConversions: 2, maxCpuThreads: 8),
+                    conversionJobService: jobs);
+
+                var results = service.Import(
+                    new List<ImportDecision<LocalBook>>
+                    {
+                        new(new LocalBook
+                        {
+                            Path = sourcePath,
+                            Book = book,
+                            Author = author,
+                            Edition = edition,
+                            Quality = new QualityModel { Quality = Quality.MP3, Revision = new Revision() }
+                        })
+                    },
+                    replaceExisting: false,
+                    downloadClientItem: null,
+                    importMode: ImportMode.Move,
+                    cancellationToken: CancellationToken.None);
+
+                // The detached route relies on ProcessMonitoredDownloadsCommand coming back to
+                // import the artifact, and that command only ever walks tracked downloads - a
+                // detached job here would sit at ready-to-import forever.
+                Assert.That(jobs.Request, Is.Null);
+                Assert.That(conversion.ConvertCalls, Is.EqualTo(1));
+                Assert.That(results.Single().Result, Is.EqualTo(ImportResultType.Imported));
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    Directory.Delete(tempDir, recursive: true);
+                }
+
+                if (Directory.Exists(destinationDir))
+                {
+                    Directory.Delete(destinationDir, recursive: true);
+                }
+            }
+        }
+
+        [Test]
+        public void should_convert_inline_when_the_download_client_item_has_a_blank_download_id()
+        {
+            var tempDir = Path.Combine(TestContext.CurrentContext.WorkDirectory, $"conversion-blank-id-{Guid.NewGuid():N}");
+            var destinationDir = Path.Combine(TestContext.CurrentContext.WorkDirectory, $"conversion-blank-id-destination-{Guid.NewGuid():N}");
+            var sourcePath = Path.Combine(tempDir, "Black Sheep.mp3");
+            var destinationPath = Path.Combine(destinationDir, "Black Sheep.m4b");
+            Directory.CreateDirectory(tempDir);
+            Directory.CreateDirectory(destinationDir);
+            File.WriteAllText(sourcePath, "fake mp3");
+
+            try
+            {
+                var (_, author, book, edition) = CreateAudiobookConversionGraph(72);
+                var (bookService, _) = CreateBookService(new List<Book> { book });
+                var conversion = new SuccessfulM4bConversionService();
+                var jobs = new RecordingConversionJobService();
+
+                var service = new ImportApprovedBooks(
+                    new StubMediaFileService(),
+                    new StubMetadataTagService(),
+                    new StubMediaInfoExtractor(),
+                    Proxy<IAuthorService>(),
+                    bookService,
+                    CreateEditionService(new List<Edition> { edition }),
+                    Proxy<IRecycleBinProvider>(),
+                    Proxy<IExtraService>(),
+                    new StubMoveBookFiles { DestinationPath = destinationPath },
+                    Proxy<IHistoryService>(),
+                    Proxy<NzbDrone.Core.Download.History.IDownloadHistoryService>(),
+                    new NoOpEventAggregator(),
+                    Proxy<IManageCommandQueue>(),
+                    Proxy<ISeriesBookLinkService>(),
+                    Proxy<ISeriesService>(),
+                    Proxy<IQualityProfileService>(),
+                    conversion,
+                    LogManager.GetLogger("ImportApprovedBooksAdditionalCopyFixture"),
+                    configService: CreateConfigService(concurrentConversions: 2, maxCpuThreads: 8),
+                    conversionJobService: jobs);
+
+                var results = service.Import(
+                    new List<ImportDecision<LocalBook>>
+                    {
+                        new(new LocalBook
+                        {
+                            Path = sourcePath,
+                            Book = book,
+                            Author = author,
+                            Edition = edition,
+                            Quality = new QualityModel { Quality = Quality.MP3, Revision = new Revision() }
+                        })
+                    },
+                    replaceExisting: false,
+                    downloadClientItem: new DownloadClientItem { DownloadId = "   " },
+                    importMode: ImportMode.Move,
+                    cancellationToken: CancellationToken.None);
+
+                // Enqueue rejects a blank download id, so detaching one would have failed the
+                // import with a validation error instead of converting it.
+                Assert.That(jobs.Request, Is.Null);
+                Assert.That(conversion.ConvertCalls, Is.EqualTo(1));
+                Assert.That(results.Single().Result, Is.EqualTo(ImportResultType.Imported));
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    Directory.Delete(tempDir, recursive: true);
+                }
+
+                if (Directory.Exists(destinationDir))
+                {
+                    Directory.Delete(destinationDir, recursive: true);
+                }
+            }
+        }
+
+        [Test]
+        public void should_register_untracked_conversion_so_the_queue_can_surface_it()
+        {
+            var tempPath = Path.Combine(TestContext.CurrentContext.WorkDirectory, $"conversion-untracked-register-{Guid.NewGuid():N}.mp3");
+            var destinationDir = Path.Combine(TestContext.CurrentContext.WorkDirectory, $"conversion-untracked-register-destination-{Guid.NewGuid():N}");
+            var destinationPath = Path.Combine(destinationDir, "Black Sheep.m4b");
+            File.WriteAllText(tempPath, "fake mp3");
+
+            var tracking = new ConversionTrackingService(new NoOpEventAggregator());
+            var before = tracking.GetUntracked().Select(c => c.DownloadId).ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+            try
+            {
+                var (_, author, book, edition) = CreateAudiobookConversionGraph(73);
+                var conversion = new FailingM4bConversionService();
+
+                var service = new ImportApprovedBooks(
+                    new StubMediaFileService(),
+                    new StubMetadataTagService(),
+                    Proxy<IMediaInfoExtractor>(),
+                    Proxy<IAuthorService>(),
+                    Proxy<IBookService>(),
+                    CreateEditionService(new List<Edition> { edition }),
+                    Proxy<IRecycleBinProvider>(),
+                    Proxy<IExtraService>(),
+                    new StubMoveBookFiles { DestinationPath = destinationPath },
+                    Proxy<IHistoryService>(),
+                    Proxy<NzbDrone.Core.Download.History.IDownloadHistoryService>(),
+                    new NoOpEventAggregator(),
+                    Proxy<IManageCommandQueue>(),
+                    Proxy<ISeriesBookLinkService>(),
+                    Proxy<ISeriesService>(),
+                    Proxy<IQualityProfileService>(),
+                    conversion,
+                    LogManager.GetLogger("ImportApprovedBooksAdditionalCopyFixture"),
+                    conversionTrackingService: tracking);
+
+                service.Import(
+                    new List<ImportDecision<LocalBook>>
+                    {
+                        new(new LocalBook
+                        {
+                            Path = tempPath,
+                            Book = book,
+                            Author = author,
+                            Edition = edition,
+                            Quality = new QualityModel { Quality = Quality.MP3, Revision = new Revision() }
+                        })
+                    },
+                    replaceExisting: false,
+                    downloadClientItem: null,
+                    importMode: ImportMode.Move,
+                    cancellationToken: CancellationToken.None);
+
+                // The tracker is process-wide, so only assert over what this import added.
+                var registered = tracking.GetUntracked().Where(c => !before.Contains(c.DownloadId)).ToList();
+
+                Assert.That(registered, Has.Count.EqualTo(1));
+                Assert.That(registered[0].DownloadId, Does.StartWith("local-"));
+                Assert.That(registered[0].Context.Book.Id, Is.EqualTo(book.Id));
+                Assert.That(registered[0].Context.Author.Id, Is.EqualTo(author.Id));
+                Assert.That(registered[0].Context.Title, Is.EqualTo("Black Sheep"));
+
+                // A failed conversion keeps its row so the failure stays visible in the queue.
+                Assert.That(registered[0].Status.Status, Is.EqualTo("failed"));
+
+                tracking.Clear(registered[0].DownloadId);
+                Assert.That(tracking.GetUntracked().Any(c => c.DownloadId == registered[0].DownloadId), Is.False);
+            }
+            finally
+            {
+                if (File.Exists(tempPath))
+                {
+                    File.Delete(tempPath);
                 }
 
                 if (Directory.Exists(destinationDir))

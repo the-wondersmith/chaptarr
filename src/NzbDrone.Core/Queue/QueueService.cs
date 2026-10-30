@@ -58,12 +58,13 @@ namespace NzbDrone.Core.Queue
                 .ToList();
 
             ApplyConversionStatuses(queue);
+            queue.AddRange(BuildUntrackedConversionQueue(queue));
             return queue;
         }
 
         public Queue Find(int id)
         {
-            return CloneQueueItem(_queue.SingleOrDefault(q => q.Id == id));
+            return GetQueue().SingleOrDefault(q => q.Id == id);
         }
 
         public void Remove(int id)
@@ -573,6 +574,63 @@ namespace NzbDrone.Core.Queue
                 ConversionJobStatus.Cancelled => "cancelled",
                 _ => null
             };
+        }
+
+        // An import with no download-client item (folder scan, manual import) still converts, but it
+        // has no TrackedDownload for the queue to derive a row from, so without this the conversion
+        // runs invisibly: no progress, no cancel control. Pending releases already reach the queue
+        // from their own source the same way; this is a third one.
+        private List<Queue> BuildUntrackedConversionQueue(IEnumerable<Queue> trackedQueue)
+        {
+            if (_conversionTrackingService == null)
+            {
+                return new List<Queue>();
+            }
+
+            var tracked = new HashSet<string>(
+                trackedQueue.Select(q => q.DownloadId).Where(id => !string.IsNullOrWhiteSpace(id)),
+                StringComparer.OrdinalIgnoreCase);
+
+            return _conversionTrackingService.GetUntracked()
+                .Where(conversion => !tracked.Contains(conversion.DownloadId))
+                .Select(MapUntrackedConversion)
+                .ToList();
+        }
+
+        private static Queue MapUntrackedConversion(UntrackedConversion conversion)
+        {
+            var context = conversion.Context;
+            var status = conversion.Status;
+
+            var queue = new Queue
+            {
+                Author = context.Author,
+                Book = context.Book,
+                Quality = context.Quality ?? new QualityModel(Quality.Unknown),
+                Title = context.Title,
+                Size = context.Size,
+                Sizeleft = 0,
+                Added = context.Added,
+
+                // The files are already on disk; only the conversion is outstanding. The queue's
+                // status cell nests every conversion state under "completed", so reporting that
+                // here is what makes an untracked conversion render like a tracked one.
+                Status = "completed",
+                TrackedDownloadState = TrackedDownloadState.Importing,
+                StatusMessages = new List<TrackedDownloadStatusMessage>(),
+                DownloadId = conversion.DownloadId,
+                TargetBookIds = context.Book?.Id > 0 ? new List<int> { context.Book.Id } : new List<int>(),
+                ConversionStatus = status.Status,
+                ConvertToQualityId = status.TargetQualityId,
+                ConvertToQuality = status.TargetQualityName,
+                ConversionProgress = status.Progress,
+                ConversionMessage = status.Message,
+                CanCancelConversion = IsCancellableConversion(status)
+            };
+
+            queue.Id = HashConverter.GetHashInt31($"conversion-{conversion.DownloadId}");
+
+            return queue;
         }
 
         private static bool IsCancellableConversion(ConversionQueueStatus conversion)
