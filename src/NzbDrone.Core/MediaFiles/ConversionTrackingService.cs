@@ -1,7 +1,11 @@
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
+using NzbDrone.Core.Books;
 using NzbDrone.Core.Messaging.Events;
+using NzbDrone.Core.Qualities;
 using NzbDrone.Core.Queue;
 
 namespace NzbDrone.Core.MediaFiles
@@ -17,6 +21,8 @@ namespace NzbDrone.Core.MediaFiles
         void Fail(string downloadId, string errorMessage);
         void Clear(string downloadId);
         ConversionQueueStatus Get(string downloadId);
+        void RegisterUntracked(string downloadId, UntrackedConversionContext context);
+        List<UntrackedConversion> GetUntracked();
     }
 
     public class ConversionTrackingService : IConversionTrackingService
@@ -25,6 +31,12 @@ namespace NzbDrone.Core.MediaFiles
         private static readonly TimeSpan PruneInterval = TimeSpan.FromMinutes(15);
         private static readonly ConcurrentDictionary<string, ConversionQueueStatus> _statuses = new(StringComparer.OrdinalIgnoreCase);
         private static readonly ConcurrentDictionary<string, CancellationTokenSource> _cancellations = new(StringComparer.OrdinalIgnoreCase);
+
+        // Conversions started by an import that has no download-client item (folder scans, manual
+        // imports) have no TrackedDownload, so QueueService cannot derive a row for them. The
+        // context recorded here is what lets the queue synthesise one. It is kept separate from
+        // _statuses because Start and Fail replace the status object wholesale.
+        private static readonly ConcurrentDictionary<string, UntrackedConversionContext> _untracked = new(StringComparer.OrdinalIgnoreCase);
         private static DateTime _lastPruneUtc = DateTime.MinValue;
         private readonly IEventAggregator _eventAggregator;
 
@@ -174,6 +186,7 @@ namespace NzbDrone.Core.MediaFiles
             }
 
             _statuses.TryRemove(downloadId, out _);
+            _untracked.TryRemove(downloadId, out _);
             ClearCancellation(downloadId);
             PublishQueueUpdate();
         }
@@ -207,6 +220,7 @@ namespace NzbDrone.Core.MediaFiles
             }
 
             _statuses.TryRemove(downloadId, out _);
+            _untracked.TryRemove(downloadId, out _);
             ClearCancellation(downloadId);
             PublishQueueUpdate();
         }
@@ -221,6 +235,37 @@ namespace NzbDrone.Core.MediaFiles
             PruneExpiredTerminalStatuses();
 
             return _statuses.TryGetValue(downloadId, out var status) ? status : null;
+        }
+
+        public void RegisterUntracked(string downloadId, UntrackedConversionContext context)
+        {
+            if (string.IsNullOrWhiteSpace(downloadId) || context == null)
+            {
+                return;
+            }
+
+            _untracked[downloadId] = context;
+        }
+
+        public List<UntrackedConversion> GetUntracked()
+        {
+            PruneExpiredTerminalStatuses();
+
+            return _untracked
+                .Select(item => new
+                {
+                    item.Key,
+                    item.Value,
+                    Status = _statuses.TryGetValue(item.Key, out var status) ? status : null
+                })
+                .Where(item => item.Status != null)
+                .Select(item => new UntrackedConversion
+                {
+                    DownloadId = item.Key,
+                    Context = item.Value,
+                    Status = item.Status
+                })
+                .ToList();
         }
 
         private static void ClearCancellation(string downloadId)
@@ -257,6 +302,7 @@ namespace NzbDrone.Core.MediaFiles
                 }
 
                 _statuses.TryRemove(item.Key, out _);
+                _untracked.TryRemove(item.Key, out _);
             }
         }
 
@@ -276,5 +322,25 @@ namespace NzbDrone.Core.MediaFiles
         public string Message { get; set; }
         public bool CanCancel { get; set; }
         public DateTime Updated { get; set; }
+    }
+
+    /// <summary>
+    /// The queue-row detail a conversion with no download-client item cannot get from a TrackedDownload.
+    /// </summary>
+    public class UntrackedConversionContext
+    {
+        public Author Author { get; set; }
+        public Book Book { get; set; }
+        public string Title { get; set; }
+        public QualityModel Quality { get; set; }
+        public decimal Size { get; set; }
+        public DateTime Added { get; set; }
+    }
+
+    public class UntrackedConversion
+    {
+        public string DownloadId { get; set; }
+        public UntrackedConversionContext Context { get; set; }
+        public ConversionQueueStatus Status { get; set; }
     }
 }

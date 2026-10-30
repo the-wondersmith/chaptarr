@@ -135,6 +135,8 @@ namespace Chaptarr.Core.Test.Download
             }
 
             public ConversionQueueStatus Get(string downloadId) => null;
+            public void RegisterUntracked(string downloadId, UntrackedConversionContext context) => throw new NotImplementedException();
+            public List<UntrackedConversion> GetUntracked() => new();
         }
 
         private sealed class RecordingDownloadClientFileSnapshotService : IDownloadClientFileSnapshotService

@@ -171,8 +171,12 @@ namespace Chaptarr.Api.V1.Queue
                 throw new NotFoundException();
             }
 
+            // A conversion that ran inline - an import with no download-client item, or a manual
+            // import - never created a durable job, so the job service has nothing to cancel.
+            // Its cancellation source is registered with the tracker instead.
             var cancelled = !queueItem.DownloadId.IsNullOrWhiteSpace() &&
-                            (_conversionJobService?.Cancel(queueItem.DownloadId) ?? _conversionTrackingService.Cancel(queueItem.DownloadId));
+                            ((_conversionJobService?.Cancel(queueItem.DownloadId) ?? false) ||
+                             _conversionTrackingService.Cancel(queueItem.DownloadId));
             if (!cancelled)
             {
                 throw new BadRequestException("No active conversion found for this queue item");
