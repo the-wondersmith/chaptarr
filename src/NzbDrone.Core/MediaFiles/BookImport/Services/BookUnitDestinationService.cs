@@ -123,8 +123,40 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Services
                 return emptyTargetedDestination.Value;
             }
 
+            // Check files on BOOK level, not edition - prevents different folders from collapsing onto same book
+            // when they match different editions of the same work.
+            // Use BuildRootUnitKey (not simple folder+ext) to handle multi-CD structures
+            // where CD1/, CD2/, etc. should all resolve to the same book root.
+            var existingFiles = _mediaFileService.GetFilesByBook(canonicalBook.Id) ?? new List<BookFile>();
+            var existingUnitEditions = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            foreach (var f in existingFiles)
+            {
+                var existingKey = BuildRootUnitKeyWithExtension(f.Path, canonicalEdition.Title, canonicalBook.MediaType);
+                if (!existingUnitEditions.TryGetValue(existingKey, out var mappedEditionId) || mappedEditionId <= 0)
+                {
+                    existingUnitEditions[existingKey] = f.EditionId;
+                }
+            }
+
             if (!canReuseCanonicalBook)
             {
+                // The unit already lives on the canonical book, pinned to the protected edition. A copy
+                // can never receive those files - BookImportService rejects the relink with
+                // PATH_LINKED_TO_DIFFERENT_EDITION - so the copy would be stranded empty and monitored,
+                // driving phantom wanted/missing searches. Leave the unit on the edition it already has.
+                if (existingUnitEditions.TryGetValue(unitKey, out var pinnedEditionId))
+                {
+                    _logger.Debug("[EDITION-PIN-PROTECTION] Unit '{0}' already lives on BookId={1} EditionId={2}; leaving it in place instead of copying matched EditionId={3}",
+                        unitKey,
+                        canonicalBook.Id,
+                        pinnedEditionId > 0 ? pinnedEditionId : conflictingProtectedEdition.Id,
+                        canonicalEdition.Id);
+
+                    // Deliberately not cached: the cache guard above evicts any entry pointing at the
+                    // canonical book while a pin conflict exists, so caching this would only force a recompute.
+                    return (canonicalBook.Id, pinnedEditionId > 0 ? pinnedEditionId : conflictingProtectedEdition.Id);
+                }
+
                 var protectedClone = CloneBookAndEdition(
                     canonicalBook,
                     canonicalEdition,
@@ -139,9 +171,6 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Services
                 return protectedClone;
             }
 
-            // Check files on BOOK level, not edition - prevents different folders from collapsing onto same book
-            // when they match different editions of the same work
-            var existingFiles = _mediaFileService.GetFilesByBook(canonicalBook.Id) ?? new List<BookFile>();
             if (existingFiles.Count == 0)
             {
                 // No existing files on canonical book → reuse canonical
@@ -150,16 +179,7 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Services
                 return dest0;
             }
 
-            // Check if existing files belong to the same unit key
-            // Use BuildRootUnitKey (not simple folder+ext) to handle multi-CD structures
-            // where CD1/, CD2/, etc. should all resolve to the same book root
-            var existingKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var f in existingFiles)
-            {
-                existingKeys.Add(BuildRootUnitKeyWithExtension(f.Path, canonicalEdition.Title, canonicalBook.MediaType));
-            }
-
-            if (existingKeys.Contains(unitKey))
+            if (existingUnitEditions.ContainsKey(unitKey))
             {
                 var dest1 = (canonicalBook.Id, canonicalEdition.Id);
                 if (!string.IsNullOrWhiteSpace(cacheKey)) _unitDestCache[cacheKey] = dest1;

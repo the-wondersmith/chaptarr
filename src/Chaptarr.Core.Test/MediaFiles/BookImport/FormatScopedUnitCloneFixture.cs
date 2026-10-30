@@ -573,6 +573,127 @@ namespace Chaptarr.Core.Test.MediaFiles.BookImport
         }
 
         [Test]
+        public void should_leave_a_pinned_unit_where_it_already_lives_instead_of_stranding_an_empty_copy()
+        {
+            var logger = LogManager.GetCurrentClassLogger();
+            var canonicalBook = new Book
+            {
+                Id = 2016,
+                AuthorId = 56,
+                Title = "Dead Things",
+                TitleSlug = "dead-things",
+                BaseBookId = "dead-things",
+                MediaType = BookMediaType.Audiobook,
+                AnyEditionOk = false
+            };
+            var pinnedEdition = new Edition
+            {
+                Id = 6116,
+                BookId = canonicalBook.Id,
+                Title = "Dead Things (Pinned Narration)",
+                ForeignEditionId = "az:ed:dead-things-pinned",
+                Monitored = true,
+                ManualAdd = false
+            };
+            var matchedEdition = new Edition
+            {
+                Id = 6117,
+                BookId = canonicalBook.Id,
+                Title = "Dead Things (Other Narration)",
+                ForeignEditionId = "az:ed:dead-things-other",
+                Monitored = false
+            };
+
+            // The file is already linked to the protected edition on the canonical book. A copy can
+            // never receive it - BookImportService rejects the relink as PATH_LINKED_TO_DIFFERENT_EDITION.
+            var pinnedFile = new BookFile
+            {
+                EditionId = pinnedEdition.Id,
+                Path = "/audiobooks/Stephen Blackmoore/Eric Carter/01 - Dead Things/01 - Dead Things.m4b"
+            };
+
+            var mediaFileService = new StubMediaFileService(new Dictionary<int, List<BookFile>>
+            {
+                [canonicalBook.Id] = new List<BookFile> { pinnedFile }
+            });
+            var bookService = new InMemoryBookService(new[] { canonicalBook });
+            var editionService = new InMemoryEditionService(new[] { pinnedEdition, matchedEdition });
+            var unitDestination = new BookUnitDestinationService(
+                mediaFileService,
+                bookService,
+                editionService,
+                new StubMainDatabase(),
+                logger);
+
+            var unitKey = unitDestination.BuildRootUnitKeyWithExtension(pinnedFile.Path, matchedEdition.Title, canonicalBook.MediaType);
+            var destination = unitDestination.ResolveDestinationForUnit(canonicalBook, matchedEdition, unitKey);
+
+            Assert.That(destination.BookId, Is.EqualTo(canonicalBook.Id), "a unit already filed on the pinned book must not be routed to a copy it can never receive");
+            Assert.That(destination.EditionId, Is.EqualTo(pinnedEdition.Id), "the unit should stay on the edition its file is actually linked to");
+            Assert.That(bookService.GetBooksByAuthor(canonicalBook.AuthorId), Has.Count.EqualTo(1), "no orphan copy should be minted");
+        }
+
+        [Test]
+        public void should_still_copy_a_conflicting_match_when_the_pinned_book_holds_a_different_unit()
+        {
+            var logger = LogManager.GetCurrentClassLogger();
+            var canonicalBook = new Book
+            {
+                Id = 2018,
+                AuthorId = 56,
+                Title = "Dead Things",
+                TitleSlug = "dead-things-other-unit",
+                BaseBookId = "dead-things-other-unit",
+                MediaType = BookMediaType.Audiobook,
+                AnyEditionOk = false
+            };
+            var pinnedEdition = new Edition
+            {
+                Id = 6118,
+                BookId = canonicalBook.Id,
+                Title = "Dead Things (Pinned Narration)",
+                ForeignEditionId = "az:ed:dead-things-pinned-2",
+                Monitored = true,
+                ManualAdd = false
+            };
+            var matchedEdition = new Edition
+            {
+                Id = 6119,
+                BookId = canonicalBook.Id,
+                Title = "Dead Things (Other Narration)",
+                ForeignEditionId = "az:ed:dead-things-other-2",
+                Monitored = false
+            };
+            var pinnedFile = new BookFile
+            {
+                EditionId = pinnedEdition.Id,
+                Path = "/audiobooks/Stephen Blackmoore/Eric Carter/01 - Dead Things/01 - Dead Things.m4b"
+            };
+
+            var mediaFileService = new StubMediaFileService(new Dictionary<int, List<BookFile>>
+            {
+                [canonicalBook.Id] = new List<BookFile> { pinnedFile }
+            });
+            var bookService = new InMemoryBookService(new[] { canonicalBook });
+            var editionService = new InMemoryEditionService(new[] { pinnedEdition, matchedEdition });
+            var unitDestination = new BookUnitDestinationService(
+                mediaFileService,
+                bookService,
+                editionService,
+                new StubMainDatabase(),
+                logger);
+
+            var incomingUnitKey = unitDestination.BuildRootUnitKeyWithExtension(
+                "/audiobooks/Stephen Blackmoore/Eric Carter/01 - Dead Things (Other Narration)/01 - Dead Things.m4b",
+                matchedEdition.Title,
+                canonicalBook.MediaType);
+            var destination = unitDestination.ResolveDestinationForUnit(canonicalBook, matchedEdition, incomingUnitKey);
+
+            Assert.That(destination.BookId, Is.Not.EqualTo(canonicalBook.Id), "a genuinely new unit must still be copied off the pinned book");
+            Assert.That(pinnedEdition.Monitored, Is.True);
+        }
+
+        [Test]
         public void cached_canonical_destination_must_not_bypass_a_pin_added_later()
         {
             var logger = LogManager.GetCurrentClassLogger();
