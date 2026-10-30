@@ -19,7 +19,9 @@ using NzbDrone.Core.MediaCover;
 using NzbDrone.Core.MediaCover.Commands;
 using NzbDrone.Core.Messaging.Commands;
 using SixLabors.ImageSharp;
+using SixLabors.ImageSharp.Formats.Jpeg;
 using SixLabors.ImageSharp.Formats.Png;
+using SixLabors.ImageSharp.Formats.Webp;
 using SixLabors.ImageSharp.PixelFormats;
 
 namespace Chaptarr.Core.Test.MediaCover
@@ -983,11 +985,15 @@ namespace Chaptarr.Core.Test.MediaCover
             Assert.That(mapper.CanHandle("/MediaCover/Books/12/cover-metadata.json"), Is.False);
         }
 
-        [TestCase(".png", "PNG")]
-        [TestCase(".jpeg", "JPEG")]
-        [TestCase(".jfif", "JPEG")]
-        [TestCase(".webp", "Webp")]
-        public void image_resizer_should_preserve_the_destination_file_format(string extension, string expectedFormat)
+        // Matched on format type rather than IImageFormat.Name: the name is vendor
+        // display metadata that moves between ImageSharp majors - 3.x reported WebP
+        // as "Webp", 4.x reports "WEBP" - while the type identity is what this test
+        // actually means by "preserved the format".
+        [TestCase(".png", typeof(PngFormat))]
+        [TestCase(".jpeg", typeof(JpegFormat))]
+        [TestCase(".jfif", typeof(JpegFormat))]
+        [TestCase(".webp", typeof(WebpFormat))]
+        public void image_resizer_should_preserve_the_destination_file_format(string extension, Type expectedFormat)
         {
             var folder = Path.Combine(Path.GetTempPath(), "chaptarr-image-resizer-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(folder);
@@ -1003,7 +1009,7 @@ namespace Chaptarr.Core.Test.MediaCover
 
                 new ImageResizer(null, null).Resize(source, destination, 10);
 
-                Assert.That(Image.DetectFormat(destination)?.Name, Is.EqualTo(expectedFormat));
+                Assert.That(Image.DetectFormat(destination), Is.InstanceOf(expectedFormat));
                 Assert.That(Image.Identify(destination)?.Height, Is.EqualTo(10));
             }
             finally
