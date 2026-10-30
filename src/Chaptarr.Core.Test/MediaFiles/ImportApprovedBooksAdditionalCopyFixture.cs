@@ -1501,6 +1501,149 @@ namespace Chaptarr.Core.Test.MediaFiles
         }
 
         [Test]
+        public void should_reject_additional_copy_when_file_is_already_at_its_managed_destination()
+        {
+            var qualityProfile = new QualityProfile
+            {
+                Id = 1,
+                Name = "Ebooks",
+                ProfileType = ProfileType.Ebook,
+                UpgradeAllowed = false,
+                Items = new List<QualityProfileQualityItem>
+                {
+                    new() { Allowed = true, Quality = Quality.EPUB }
+                }
+            };
+
+            var author = new Author
+            {
+                Id = 42,
+                Name = "Shirtaloon",
+                EbookRootFolderPath = "/ebooks",
+                EbookPath = "/ebooks/Shirtaloon",
+                EbookQualityProfileId = qualityProfile.Id,
+                EbookQualityProfile = qualityProfile
+            };
+
+            var book = new Book
+            {
+                Id = 10893,
+                Title = "He Who Fights With Monsters",
+                TitleSlug = "he-who-fights-with-monsters",
+                MediaType = BookMediaType.Ebook,
+                Author = author,
+                AuthorId = author.Id
+            };
+
+            var edition = new Edition
+            {
+                Id = 30425,
+                BookId = book.Id,
+                Book = book,
+                Title = "He Who Fights With Monsters",
+                IsEbook = true,
+                ForeignEditionId = "hc:edition:30425"
+            };
+
+            var destinationDir = Path.Combine(TestContext.CurrentContext.WorkDirectory, $"additional-copy-in-place-{Guid.NewGuid():N}");
+            Directory.CreateDirectory(destinationDir);
+
+            // A sibling file that is mapped to the book, so the batch is treated as a replacement.
+            var mappedSiblingPath = Path.Combine(destinationDir, "He Who Fights With Monsters.mobi");
+            File.WriteAllText(mappedSiblingPath, "mapped sibling");
+            var mappedSibling = new BookFile
+            {
+                Id = 700,
+                Path = mappedSiblingPath,
+                EditionId = edition.Id,
+                Edition = edition,
+                Quality = new QualityModel { Quality = Quality.EPUB, Revision = new Revision() }
+            };
+
+            // The incoming file is already sitting at its own managed destination and is already
+            // tracked, but the row lost its edition link (the state a book delete that keeps files
+            // leaves behind). A rescan re-presents it for import.
+            var managedDestinationPath = Path.Combine(destinationDir, "He Who Fights With Monsters.epub");
+            File.WriteAllText(managedDestinationPath, "already in place");
+            var untetheredTrackedFile = new BookFile
+            {
+                Id = 701,
+                Path = managedDestinationPath,
+                EditionId = 0,
+                Quality = new QualityModel { Quality = Quality.EPUB, Revision = new Revision() }
+            };
+
+            var mediaFileService = new StubMediaFileService();
+            mediaFileService.FilesByBook.Add(mappedSibling);
+            mediaFileService.FilesByPath[mappedSiblingPath] = mappedSibling;
+            mediaFileService.FilesByBook.Add(untetheredTrackedFile);
+            mediaFileService.FilesByPath[managedDestinationPath] = untetheredTrackedFile;
+
+            var mover = new StubMoveBookFiles
+            {
+                DestinationPath = managedDestinationPath
+            };
+
+            var (bookService, bookProxy) = CreateBookService(new List<Book> { book });
+
+            var service = new ImportApprovedBooks(
+                mediaFileService,
+                new StubMetadataTagService(),
+                Proxy<IMediaInfoExtractor>(),
+                Proxy<IAuthorService>(),
+                bookService,
+                CreateEditionService(new List<Edition> { edition }),
+                Proxy<IRecycleBinProvider>(),
+                Proxy<IExtraService>(),
+                mover,
+                Proxy<IHistoryService>(),
+                Proxy<NzbDrone.Core.Download.History.IDownloadHistoryService>(),
+                new NoOpEventAggregator(),
+                Proxy<IManageCommandQueue>(),
+                Proxy<ISeriesBookLinkService>(),
+                Proxy<ISeriesService>(),
+                Proxy<IQualityProfileService>(),
+                Proxy<IM4bConversionService>(),
+                LogManager.GetLogger("ImportApprovedBooksAdditionalCopyFixture"));
+
+            var localBook = new LocalBook
+            {
+                Path = managedDestinationPath,
+                Book = book,
+                Author = author,
+                Edition = edition,
+                Quality = new QualityModel { Quality = Quality.EPUB, Revision = new Revision() },
+                Part = 1,
+                PartCount = 1
+            };
+
+            try
+            {
+                var results = service.Import(
+                    new List<ImportDecision<LocalBook>> { new(localBook) },
+                    replaceExisting: true,
+                    downloadClientItem: new DownloadClientItem(),
+                    importMode: ImportMode.Move,
+                    cancellationToken: CancellationToken.None);
+
+                Assert.That(results, Has.Count.EqualTo(1));
+                Assert.That(results[0].Result, Is.EqualTo(ImportResultType.Skipped));
+                Assert.That(results[0].Errors.Single(), Does.Contain("already tracked at its managed destination"));
+                Assert.That(bookProxy.InsertedBooks, Is.Empty, "a rescan of a file already in place must not mint an additional-copy clone");
+                Assert.That(mover.PreviewCalls, Is.EqualTo(1));
+                Assert.That(mover.MoveCalls, Is.EqualTo(0));
+                Assert.That(mover.CopyCalls, Is.EqualTo(0));
+            }
+            finally
+            {
+                if (Directory.Exists(destinationDir))
+                {
+                    Directory.Delete(destinationDir, recursive: true);
+                }
+            }
+        }
+
+        [Test]
         public void should_not_convert_tracked_download_when_any_file_was_rejected_by_matching()
         {
             var tempPath = Path.Combine(TestContext.CurrentContext.WorkDirectory, $"conversion-match-gate-{Guid.NewGuid():N}.mp3");
