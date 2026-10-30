@@ -30,6 +30,11 @@ jobs:
     uses: ./.github/workflows/build.yml
     permissions:
       contents: read
+    # build.yml's jobs name the `default` environment to reach the SixLabors key,
+    # but an environment secret a caller does not pass resolves to an empty string
+    # in the called workflow - silently, with no error. Without this the Release
+    # compile fails the license gate.
+    secrets: inherit
 
   release:
     needs: validate
@@ -154,6 +159,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+    # Same reason as validate: the image build compiles Release and needs the key.
+    secrets: inherit
     with:
       sha: ${{ needs.release.outputs.sha }}
       branch: ${{ github.ref_name }}

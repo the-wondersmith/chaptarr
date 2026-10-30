@@ -34,9 +34,13 @@ jobs:
     # Release builds with no key. The key lives in the `default` environment, which
     # carries no protection rules, so naming it here adds no approval gate.
     #
-    # Environment secrets do not resolve for pull_request runs from forked repos, so
-    # a PR opened from a fork will fail this gate. Merges, dispatches, and release
-    # validation all run in repo context and are unaffected.
+    # Naming the environment is necessary but not sufficient when this workflow is
+    # invoked via `uses:`: an environment secret the caller does not pass resolves to
+    # an empty string here, with no error. release.yml passes `secrets: inherit` for
+    # exactly this reason.
+    #
+    # Environment secrets also do not resolve for pull_request runs from forked repos,
+    # so a PR opened from a fork will fail this gate.
     environment: default
     env:
       SIX_LABORS_LICENSE_KEY: ${{ secrets.SIX_LABORS_LICENSE_KEY }}
