@@ -30,6 +30,16 @@ jobs:
   # macOS legs would gate releases on platforms no one consumes.
   build:
     runs-on: ubuntu-latest
+    # SixLabors.ImageSharp 4.x runs a license task before CoreCompile that hard-fails
+    # Release builds with no key. The key lives in the `default` environment, which
+    # carries no protection rules, so naming it here adds no approval gate.
+    #
+    # Environment secrets do not resolve for pull_request runs from forked repos, so
+    # a PR opened from a fork will fail this gate. Merges, dispatches, and release
+    # validation all run in repo context and are unaffected.
+    environment: default
+    env:
+      SIX_LABORS_LICENSE_KEY: ${{ secrets.SIX_LABORS_LICENSE_KEY }}
 
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -133,6 +143,10 @@ jobs:
 
   postgres-migrations:
     runs-on: ubuntu-latest
+    # Also compiles Release, so it needs the same license key as the build job.
+    environment: default
+    env:
+      SIX_LABORS_LICENSE_KEY: ${{ secrets.SIX_LABORS_LICENSE_KEY }}
     services:
       postgres:
         image: postgres:16

@@ -101,42 +101,18 @@
     <RootNamespace Condition="'$(ChaptarrProject)'=='true'">$(MSBuildProjectName.Replace('Chaptarr','NzbDrone'))</RootNamespace>
   </PropertyGroup>
 
-  <!-- SixLabors.ImageSharp advisories.
+  <!-- SixLabors.ImageSharp 4.x enforces a license gate: its ValidateLicenseTask runs
+       BeforeTargets="CoreCompile" and hard-fails Release builds with no key. Debug builds
+       only warn (the task sets ContinueOnError from the configuration), so `dotnet build
+       -c Debug` still works without the secret.
 
-       Every fix for these landed in ImageSharp 3.2.0, which is the first release
-       to enforce the Six Labors license gate: its MSBuild ValidateLicenseTask
-       hard-fails any Release build without $(SixLaborsLicenseKey). Chaptarr has
-       no key, so upgrading trades a reachability-bounded risk for a build that
-       does not compile at all. We stay on 3.1.12 and remove the vulnerable code
-       paths instead - see NzbDrone.Core/MediaCover/ImageResizer.cs, which builds
-       a Configuration registering only the JPEG, PNG, WebP, and GIF modules and
-       loads through it. The TIFF codec is never registered, so it is absent from
-       both decode and encode.
-
-       Unreachable - TIFF codec is not registered:
-         GHSA-v76p-62qx-wwq2  tiled fax TIFF decoder heap out-of-bounds write
-         GHSA-wmxv-xphr-5c9g  BigTIFF IFD count non-progressing decoder loop
-         GHSA-j9gm-c75j-xc9q  TIFF CCITT T4 encoder buffer overrun
-         GHSA-jjfr-hcj7-qf5w  TIFF CCITT T6 encoder buffer overrun
-
-       Unreachable - processor is never invoked:
-         GHSA-j3p4-wp97-rph4  HistogramEqualization unchecked histogram index.
-                              The only processor Chaptarr calls is Resize.
-
-       Reachable, accepted: GHSA-gwg2-r3hj-4w44, ICC CLUT over-allocation. ICC
-       profiles ride along in JPEG/PNG/WebP, so a crafted profile can still force
-       an oversized allocation. Impact is bounded to a failed cover resize: the
-       allocation throws, ImageResizer deletes the partial file and rethrows. No
-       memory disclosure or code execution. Revisit when a 3.1.x backport ships
-       or if Chaptarr acquires a Six Labors license. -->
-  <ItemGroup>
-    <NuGetAuditSuppress Include="https://github.com/advisories/GHSA-v76p-62qx-wwq2" />
-    <NuGetAuditSuppress Include="https://github.com/advisories/GHSA-wmxv-xphr-5c9g" />
-    <NuGetAuditSuppress Include="https://github.com/advisories/GHSA-j9gm-c75j-xc9q" />
-    <NuGetAuditSuppress Include="https://github.com/advisories/GHSA-jjfr-hcj7-qf5w" />
-    <NuGetAuditSuppress Include="https://github.com/advisories/GHSA-j3p4-wp97-rph4" />
-    <NuGetAuditSuppress Include="https://github.com/advisories/GHSA-gwg2-r3hj-4w44" />
-  </ItemGroup>
+       The task takes a single opaque LicenseKey blob - there is no license-ID input - so
+       SIX_LABORS_LICENSE_ID is portal metadata the build never reads. CI supplies
+       SIX_LABORS_LICENSE_KEY from the repository's `default` GitHub environment; set the
+       same variable locally (or drop a sixlabors.lic beside the project) for Release builds. -->
+  <PropertyGroup Condition="'$(SixLaborsLicenseKey)' == '' and '$(SIX_LABORS_LICENSE_KEY)' != ''">
+    <SixLaborsLicenseKey>$(SIX_LABORS_LICENSE_KEY)</SixLaborsLicenseKey>
+  </PropertyGroup>
 
   <!-- Use the SDK's built-in Source Link; an explicit package overrides its serviced
        Git tasks and can reintroduce vulnerable build tooling. -->

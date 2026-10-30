@@ -34,6 +34,9 @@ jobs:
   release:
     needs: validate
     runs-on: ubuntu-latest
+    # Named only so the guard below can see the environment secret. This job does
+    # not compile anything itself.
+    environment: default
     permissions:
       contents: write
     outputs:
@@ -43,6 +46,22 @@ jobs:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
         fetch-depth: 0
+
+    # The docker job compiles Release and so needs the SixLabors key, but it runs
+    # after the tag and the GitHub release already exist. Checking resolution here
+    # turns "tag pushed, no image published" into a clean pre-tag failure.
+    - name: Guard - SixLabors license key resolves
+      env:
+        SIX_LABORS_LICENSE_KEY: ${{ secrets.SIX_LABORS_LICENSE_KEY }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [[ -z "${SIX_LABORS_LICENSE_KEY:-}" ]]; then
+          echo "SIX_LABORS_LICENSE_KEY did not resolve from the 'default' environment."
+          echo "The Docker image build would fail after the release was already created."
+          exit 1
+        fi
+        echo "SixLabors license key resolved."
 
     - name: Resolve head
       id: head

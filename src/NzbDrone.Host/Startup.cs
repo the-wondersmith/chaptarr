@@ -18,7 +18,7 @@ using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
-using Microsoft.OpenApi.Models;
+using Microsoft.OpenApi;
 using NLog.Extensions.Logging;
 using NzbDrone.Common.EnvironmentInfo;
 using NzbDrone.Common.Instrumentation;
@@ -123,19 +123,16 @@ namespace NzbDrone.Host
                     Type = SecuritySchemeType.ApiKey,
                     Scheme = "apiKey",
                     Description = "Apikey passed as header",
-                    In = ParameterLocation.Header,
-                    Reference = new OpenApiReference
-                    {
-                        Type = ReferenceType.SecurityScheme,
-                        Id = "X-Api-Key"
-                    },
+                    In = ParameterLocation.Header
                 };
 
                 c.AddSecurityDefinition("X-Api-Key", apiKeyHeader);
 
-                c.AddSecurityRequirement(new OpenApiSecurityRequirement
+                // OpenAPI v2 models references as dedicated types rather than a Reference
+                // property on the scheme itself.
+                c.AddSecurityRequirement(doc => new OpenApiSecurityRequirement
                 {
-                    { apiKeyHeader, Array.Empty<string>() }
+                    { new OpenApiSecuritySchemeReference("X-Api-Key", doc), new List<string>() }
                 });
 
                 var apikeyQuery = new OpenApiSecurityScheme
@@ -144,12 +141,7 @@ namespace NzbDrone.Host
                     Type = SecuritySchemeType.ApiKey,
                     Scheme = "apiKey",
                     Description = "Apikey passed as query parameter",
-                    In = ParameterLocation.Query,
-                    Reference = new OpenApiReference
-                    {
-                        Type = ReferenceType.SecurityScheme,
-                        Id = "apikey"
-                    },
+                    In = ParameterLocation.Query
                 };
 
                 c.AddServer(new OpenApiServer
@@ -164,9 +156,9 @@ namespace NzbDrone.Host
 
                 c.AddSecurityDefinition("apikey", apikeyQuery);
 
-                c.AddSecurityRequirement(new OpenApiSecurityRequirement
+                c.AddSecurityRequirement(doc => new OpenApiSecurityRequirement
                 {
-                    { apikeyQuery, Array.Empty<string>() }
+                    { new OpenApiSecuritySchemeReference("apikey", doc), new List<string>() }
                 });
 
                 c.DescribeAllParametersInCamelCase();

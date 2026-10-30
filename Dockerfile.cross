@@ -40,9 +40,21 @@ RUN yarn build
 # Build for the target architecture only. When building multi-platform images with Buildx,
 # Docker runs this Dockerfile once per target platform, so producing *all* arch outputs here
 # just bloats every final image layer.
+#
+# SixLabors.ImageSharp 4.x hard-fails Release compiles without a license key. It arrives as a
+# BuildKit secret rather than an ARG: an ARG is recorded in the image history and would be
+# readable via `docker history` on the published image. Secret mounts are excluded from both
+# the layer and the build cache.
 ARG TARGETPLATFORM
 RUN --mount=type=cache,target=/root/.nuget/packages,sharing=locked \
+    --mount=type=secret,id=sixlabors_license_key \
     set -eux; \
+    if [ -s /run/secrets/sixlabors_license_key ]; then \
+        SIX_LABORS_LICENSE_KEY="$(cat /run/secrets/sixlabors_license_key)"; \
+        export SIX_LABORS_LICENSE_KEY; \
+    else \
+        echo "No Six Labors license key supplied; the Release compile below will fail." >&2; \
+    fi; \
     case "$TARGETPLATFORM" in \
         "linux/amd64") RUNTIME_ID="linux-x64" ;; \
         "linux/arm64") RUNTIME_ID="linux-arm64" ;; \
