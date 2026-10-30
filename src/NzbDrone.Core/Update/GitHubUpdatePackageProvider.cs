@@ -21,7 +21,7 @@ namespace NzbDrone.Core.Update
     public class GitHubUpdatePackageProvider : IGitHubUpdatePackageProvider
     {
         // Default to the Chaptarr repository
-        private const string DefaultOwner = "chaptarr";
+        private const string DefaultOwner = "the-wondersmith";
         private const string DefaultRepo = "chaptarr";
         private static readonly string[] Sha256AssetSuffixes = { ".sha256", ".sha256sum", ".sha256.txt", ".sha256sums", ".sha256sums.txt" };
 
@@ -62,7 +62,7 @@ namespace NzbDrone.Core.Update
                     return null;
                 }
 
-                return ConvertToUpdatePackage(latestRelease);
+                return ConvertToUpdatePackage(latestRelease, branch);
             }
             catch (Exception ex)
             {
@@ -85,7 +85,7 @@ namespace NzbDrone.Core.Update
                     .Where(r => !r.Prerelease || branch == "develop")
                     .Where(r => IsNewerVersion(r.TagName, previousVersion ?? new Version(0, 0, 0)))
                     .Where(r => !IsNewerVersion(r.TagName, currentVersion))
-                    .Select(ConvertToUpdatePackage)
+                    .Select(r => ConvertToUpdatePackage(r, branch))
                     .Where(p => p != null)
                     .ToList();
 
@@ -111,7 +111,7 @@ namespace NzbDrone.Core.Update
             return response.Resource;
         }
 
-        private UpdatePackage ConvertToUpdatePackage(GitHubRelease release)
+        private UpdatePackage ConvertToUpdatePackage(GitHubRelease release, string branch)
         {
             var version = ParseVersion(release.TagName);
             var asset = SelectAssetForPlatform(release.Assets);
@@ -134,7 +134,11 @@ namespace NzbDrone.Core.Update
                 ReleaseDate = release.PublishedAt ?? release.CreatedAt,
                 FileName = asset.Name,
                 Url = asset.BrowserDownloadUrl,
-                Branch = release.Prerelease ? "develop" : "main",
+
+                // Report the branch the caller is tracking. InstallUpdateService.EnsureValidBranch
+                // rewrites the configured branch to whatever we return here, so inferring it from
+                // the prerelease flag would silently move a 'fork/main' install onto 'main'.
+                Branch = branch.IsNotNullOrWhiteSpace() ? branch : (release.Prerelease ? "develop" : "main"),
                 Changes = ParseReleaseNotes(release.Body),
                 Hash = hash
             };

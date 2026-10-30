@@ -623,9 +623,11 @@ namespace NzbDrone.Core.Configuration
             set { SetValue("TrustCgnatIpAddresses", value); }
         }
 
+        // This fork publishes its releases on GitHub and has no Services update backend, so the
+        // cloud endpoint can never answer for it. Default to the GitHub provider.
         public bool UseGitHubUpdates
         {
-            get { return GetValueBoolean("UseGitHubUpdates", false); }
+            get { return GetValueBoolean("UseGitHubUpdates", true); }
             set { SetValue("UseGitHubUpdates", value); }
         }
 
