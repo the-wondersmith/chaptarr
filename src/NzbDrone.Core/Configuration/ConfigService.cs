@@ -345,6 +345,13 @@ namespace NzbDrone.Core.Configuration
             set { SetValue("AudiobookConversionNoUpscale", value); }
         }
 
+        public bool AudiobookConversionMergeMultiFileM4b
+        {
+            get { return GetValueBoolean("AudiobookConversionMergeMultiFileM4b", false); }
+
+            set { SetValue("AudiobookConversionMergeMultiFileM4b", value); }
+        }
+
         public string AudiobookConversionAudioChannels
         {
             get { return GetValue("AudiobookConversionAudioChannels", "source"); }

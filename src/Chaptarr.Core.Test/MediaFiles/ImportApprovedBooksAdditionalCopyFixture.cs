@@ -510,6 +510,7 @@ namespace Chaptarr.Core.Test.MediaFiles
             public int MinimumFreeSpaceWhenImporting { get; set; } = 100;
             public int AudiobookConversionConcurrentConversions { get; set; } = 1;
             public int AudiobookConversionMaxCpuThreads { get; set; } = 4;
+            public bool AudiobookConversionMergeMultiFileM4b { get; set; }
 
             protected override object Invoke(MethodInfo targetMethod, object[] args)
             {
@@ -541,6 +542,11 @@ namespace Chaptarr.Core.Test.MediaFiles
                 if (targetMethod?.Name == "get_AudiobookConversionNoUpscale")
                 {
                     return false;
+                }
+
+                if (targetMethod?.Name == "get_AudiobookConversionMergeMultiFileM4b")
+                {
+                    return AudiobookConversionMergeMultiFileM4b;
                 }
 
                 if (targetMethod?.Name == "get_AudiobookConversionAudioChannels")
@@ -622,12 +628,13 @@ namespace Chaptarr.Core.Test.MediaFiles
             return DispatchProxy.Create<T, ThrowingProxy<T>>();
         }
 
-        private static IConfigService CreateConfigService(int concurrentConversions = 1, int maxCpuThreads = 4)
+        private static IConfigService CreateConfigService(int concurrentConversions = 1, int maxCpuThreads = 4, bool mergeMultiFileM4b = false)
         {
             var proxy = DispatchProxy.Create<IConfigService, ConfigServiceProxy>();
             var config = (ConfigServiceProxy)(object)proxy;
             config.AudiobookConversionConcurrentConversions = concurrentConversions;
             config.AudiobookConversionMaxCpuThreads = maxCpuThreads;
+            config.AudiobookConversionMergeMultiFileM4b = mergeMultiFileM4b;
             return proxy;
         }
 
@@ -1989,6 +1996,94 @@ namespace Chaptarr.Core.Test.MediaFiles
                 Assert.That(conversion.LastOptions.Jobs, Is.EqualTo(expectedJobs));
                 Assert.That(conversion.LastOptions.FfmpegThreads, Is.EqualTo(expectedFfmpegThreads));
                 Assert.That(conversion.LastOptions.Jobs * conversion.LastOptions.FfmpegThreads, Is.LessThanOrEqualTo(maxCpuThreads));
+            }
+            finally
+            {
+                if (Directory.Exists(sourceDir))
+                {
+                    Directory.Delete(sourceDir, recursive: true);
+                }
+
+                if (Directory.Exists(destinationDir))
+                {
+                    Directory.Delete(destinationDir, recursive: true);
+                }
+            }
+        }
+
+        // A chapterized release arrives as many .m4b files that should become one. The planner reports no
+        // conversion target for it (source container already matches the profile target), so the merge is
+        // gated on the opt-in setting instead.
+        [TestCase(6, true, 1, Description = "multi-file m4b merges when the setting is on")]
+        [TestCase(6, false, 0, Description = "multi-file m4b is left alone when the setting is off")]
+        [TestCase(1, true, 0, Description = "a single m4b never needs merging")]
+        public void should_merge_multi_file_m4b_only_when_enabled(
+            int inputFileCount,
+            bool mergeMultiFileM4b,
+            int expectedConvertCalls)
+        {
+            var sourceDir = Path.Combine(TestContext.CurrentContext.WorkDirectory, $"chapterized-m4b-source-{Guid.NewGuid():N}");
+            var destinationDir = Path.Combine(TestContext.CurrentContext.WorkDirectory, $"chapterized-m4b-destination-{Guid.NewGuid():N}");
+            var destinationPath = Path.Combine(destinationDir, "Black Sheep.m4b");
+            Directory.CreateDirectory(sourceDir);
+            Directory.CreateDirectory(destinationDir);
+
+            try
+            {
+                var (_, author, book, edition) = CreateAudiobookConversionGraph(70 + inputFileCount + (mergeMultiFileM4b ? 1 : 0));
+                var paths = Enumerable.Range(1, inputFileCount)
+                    .Select(i => Path.Combine(sourceDir, $"chapter-{i:D2}.m4b"))
+                    .ToArray();
+
+                foreach (var path in paths)
+                {
+                    File.WriteAllText(path, "fake m4b");
+                }
+
+                var conversion = new FailingM4bConversionService();
+                var service = new ImportApprovedBooks(
+                    new StubMediaFileService(),
+                    new StubMetadataTagService(),
+                    Proxy<IMediaInfoExtractor>(),
+                    Proxy<IAuthorService>(),
+                    Proxy<IBookService>(),
+                    CreateEditionService(new List<Edition> { edition }),
+                    Proxy<IRecycleBinProvider>(),
+                    Proxy<IExtraService>(),
+                    new StubMoveBookFiles { DestinationPath = destinationPath },
+                    Proxy<IHistoryService>(),
+                    Proxy<NzbDrone.Core.Download.History.IDownloadHistoryService>(),
+                    new NoOpEventAggregator(),
+                    Proxy<IManageCommandQueue>(),
+                    Proxy<ISeriesBookLinkService>(),
+                    Proxy<ISeriesService>(),
+                    Proxy<IQualityProfileService>(),
+                    conversion,
+                    LogManager.GetLogger("ImportApprovedBooksAdditionalCopyFixture"),
+                    configService: CreateConfigService(mergeMultiFileM4b: mergeMultiFileM4b));
+
+                var decisions = paths.Select(path => new ImportDecision<LocalBook>(new LocalBook
+                {
+                    Path = path,
+                    Book = book,
+                    Author = author,
+                    Edition = edition,
+                    Quality = new QualityModel { Quality = Quality.M4B, Revision = new Revision() }
+                })).ToList();
+
+                service.Import(
+                    decisions,
+                    replaceExisting: false,
+                    downloadClientItem: new DownloadClientItem { DownloadId = $"chapterized-m4b-{Guid.NewGuid():N}" },
+                    importMode: ImportMode.Move,
+                    cancellationToken: CancellationToken.None);
+
+                Assert.That(conversion.ConvertCalls, Is.EqualTo(expectedConvertCalls));
+
+                if (expectedConvertCalls > 0)
+                {
+                    Assert.That(conversion.LastInputFiles, Is.EquivalentTo(paths));
+                }
             }
             finally
             {

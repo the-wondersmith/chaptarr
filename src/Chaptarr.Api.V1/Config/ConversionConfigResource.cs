@@ -9,6 +9,7 @@ namespace Chaptarr.Api.V1.Config
         public int AudiobookConversionMaxBitrate { get; set; }
         public int AudiobookConversionMaxCpuThreads { get; set; }
         public bool AudiobookConversionNoUpscale { get; set; }
+        public bool AudiobookConversionMergeMultiFileM4b { get; set; }
         public string AudiobookConversionAudioChannels { get; set; }
         public string AudiobookConversionTagMode { get; set; }
 
@@ -26,6 +27,7 @@ namespace Chaptarr.Api.V1.Config
                 AudiobookConversionMaxBitrate = model.AudiobookConversionMaxBitrate,
                 AudiobookConversionMaxCpuThreads = model.AudiobookConversionMaxCpuThreads,
                 AudiobookConversionNoUpscale = model.AudiobookConversionNoUpscale,
+                AudiobookConversionMergeMultiFileM4b = model.AudiobookConversionMergeMultiFileM4b,
                 AudiobookConversionAudioChannels = model.AudiobookConversionAudioChannels,
                 AudiobookConversionTagMode = model.AudiobookConversionTagMode,
                 EbookConversionEnabled = model.EbookConversionEnabled,

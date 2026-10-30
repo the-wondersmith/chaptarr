@@ -1532,10 +1532,6 @@ namespace NzbDrone.Core.MediaFiles.BookImport
                 var sourceQuality = first?.Quality?.Quality ?? Qualities.Quality.Unknown;
                 var qualityProfile = author.GetQualityProfileForQuality(sourceQuality);
                 var targetQuality = QualityConversionHelper.GetPlannedConversionTarget(author, first?.Quality);
-                if (targetQuality != Qualities.Quality.M4B)
-                {
-                    return (bookDecisions, null, false, null);
-                }
 
                 var inputFiles = bookDecisions
                     .Select(d => d.Item?.Path)
@@ -1549,7 +1545,24 @@ namespace NzbDrone.Core.MediaFiles.BookImport
                     return (bookDecisions, null, false, null);
                 }
 
-                if (inputFiles.All(p => Path.GetExtension(p).Equals(".m4b", StringComparison.OrdinalIgnoreCase)))
+                // A release that is already entirely .m4b needs no container change, so the planner
+                // reports no conversion target for it at all. The exception is a chapterized release -
+                // many separate .m4b files that should end up as one - which the converter is perfectly
+                // capable of merging, since CanConvert accepts .m4b as input. Merging those is opt-in,
+                // because a multi-file .m4b set can equally be a legitimate multi-part release the user
+                // wants left alone.
+                var isEntirelyM4b = inputFiles.All(p => Path.GetExtension(p).Equals(".m4b", StringComparison.OrdinalIgnoreCase));
+                var isChapterizedM4bMerge = isEntirelyM4b &&
+                                            inputFiles.Length > 1 &&
+                                            _configService?.AudiobookConversionMergeMultiFileM4b == true &&
+                                            QualityConversionHelper.TargetsM4bConversion(qualityProfile);
+
+                if (targetQuality != Qualities.Quality.M4B && !isChapterizedM4bMerge)
+                {
+                    return (bookDecisions, null, false, null);
+                }
+
+                if (isEntirelyM4b && !isChapterizedM4bMerge)
                 {
                     return (bookDecisions, null, false, null);
                 }

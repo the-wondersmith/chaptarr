@@ -152,6 +152,20 @@ class ConversionSettings extends Component {
 
                   <FormGroup size={sizes.MEDIUM}>
                     <FormLabel>
+                      {translate('MergeMultiFileM4b')}
+                    </FormLabel>
+
+                    <FormInputGroup
+                      type={inputTypes.CHECK}
+                      name="audiobookConversionMergeMultiFileM4b"
+                      helpText={translate('AudiobookConversionMergeMultiFileM4bHelpText')}
+                      onChange={onInputChange}
+                      {...settings.audiobookConversionMergeMultiFileM4b}
+                    />
+                  </FormGroup>
+
+                  <FormGroup size={sizes.MEDIUM}>
+                    <FormLabel>
                       {translate('ConversionTags')}
                     </FormLabel>
 
