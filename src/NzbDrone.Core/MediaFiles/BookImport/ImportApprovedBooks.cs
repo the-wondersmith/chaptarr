@@ -3696,12 +3696,22 @@ namespace NzbDrone.Core.MediaFiles.BookImport
 
                 var existingTracked = _mediaFileService.GetFileWithPath(destinationPath);
                 var destinationExists = DestinationFileExists(destinationPath);
-                if (existingTracked != null && destinationExists && existingTracked.Path.PathNotEquals(localBook.Path))
+
+                // The file being imported is already the tracked file sitting at its own managed
+                // destination - a library rescan re-presenting a file that was imported earlier.
+                // Cloning the book here would move the file onto itself and leave the original
+                // record with no files at all, silently turning an owned book into a wanted one.
+                if (existingTracked != null && destinationExists && existingTracked.Path.PathEquals(localBook.Path))
+                {
+                    return $"Additional physical copy cannot be imported because {destinationPath} is already tracked at its managed destination by this exact file.";
+                }
+
+                if (existingTracked != null && destinationExists)
                 {
                     return $"Additional physical copy cannot be imported because the managed destination is already occupied: {destinationPath}. Current naming settings cannot represent a separate copy.";
                 }
 
-                if (destinationExists && (existingTracked == null || existingTracked.Path.PathNotEquals(localBook.Path)))
+                if (destinationExists)
                 {
                     return $"Additional physical copy cannot be imported because the managed destination already exists on disk: {destinationPath}. Current naming settings cannot represent a separate copy.";
                 }
