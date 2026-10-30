@@ -438,6 +438,7 @@ namespace NzbDrone.Core.Configuration.SettingsBackups
                     AudiobookConversionMaxBitrate = _configService.AudiobookConversionMaxBitrate,
                     AudiobookConversionMaxCpuThreads = _configService.AudiobookConversionMaxCpuThreads,
                     AudiobookConversionNoUpscale = _configService.AudiobookConversionNoUpscale,
+                    AudiobookConversionMergeMultiFileM4b = _configService.AudiobookConversionMergeMultiFileM4b,
                     AudiobookConversionAudioChannels = _configService.AudiobookConversionAudioChannels,
                     AudiobookConversionTagMode = _configService.AudiobookConversionTagMode,
                     EbookConversionEnabled = _configService.EbookConversionEnabled,
@@ -986,6 +987,7 @@ namespace NzbDrone.Core.Configuration.SettingsBackups
             _configService.AudiobookConversionMaxBitrate = mm.AudiobookConversionMaxBitrate > 0 ? mm.AudiobookConversionMaxBitrate : 64;
             _configService.AudiobookConversionMaxCpuThreads = Math.Max(audiobookConversionConcurrentConversions, audiobookConversionMaxCpuThreads);
             _configService.AudiobookConversionNoUpscale = mm.AudiobookConversionNoUpscale;
+            _configService.AudiobookConversionMergeMultiFileM4b = mm.AudiobookConversionMergeMultiFileM4b;
             _configService.AudiobookConversionAudioChannels = string.IsNullOrWhiteSpace(mm.AudiobookConversionAudioChannels) ? "source" : mm.AudiobookConversionAudioChannels;
             _configService.AudiobookConversionTagMode = string.IsNullOrWhiteSpace(mm.AudiobookConversionTagMode) ? ConversionTagModes.Preserve : mm.AudiobookConversionTagMode;
             _configService.EbookConversionEnabled = mm.EbookConversionEnabled;

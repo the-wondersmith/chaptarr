@@ -68,6 +68,19 @@ namespace NzbDrone.Core.Qualities
             return null;
         }
 
+        /// <summary>
+        /// Whether the profile is configured to convert audiobooks to M4B, regardless of the source
+        /// quality. <see cref="GetPlannedConversionTarget(QualityProfile, QualityModel)"/> reports no
+        /// target when the source already matches, which hides profiles that still want an M4B-only
+        /// operation such as merging a chapterized release.
+        /// </summary>
+        public static bool TargetsM4bConversion(QualityProfile profile)
+        {
+            return profile != null &&
+                   profile.ProfileType == ProfileType.Audiobook &&
+                   GetConversionTargetQualityId(profile) == Quality.M4B.Id;
+        }
+
         private static int? GetConversionTargetQualityId(QualityProfile profile)
         {
             if (profile.ConvertToQualityId.HasValue && profile.ConvertToQualityId.Value > 0)

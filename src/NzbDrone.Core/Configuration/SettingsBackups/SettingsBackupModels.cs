@@ -267,6 +267,7 @@ namespace NzbDrone.Core.Configuration.SettingsBackups
         public int AudiobookConversionMaxBitrate { get; set; }
         public int AudiobookConversionMaxCpuThreads { get; set; }
         public bool AudiobookConversionNoUpscale { get; set; }
+        public bool AudiobookConversionMergeMultiFileM4b { get; set; }
         public string AudiobookConversionAudioChannels { get; set; }
         public string AudiobookConversionTagMode { get; set; }
         // Legacy restore shim for backups created before the setting was renamed.

@@ -50,6 +50,7 @@ namespace NzbDrone.Core.Configuration
         int AudiobookConversionMaxBitrate { get; set; }
         int AudiobookConversionMaxCpuThreads { get; set; }
         bool AudiobookConversionNoUpscale { get; set; }
+        bool AudiobookConversionMergeMultiFileM4b { get; set; }
         string AudiobookConversionAudioChannels { get; set; }
         string AudiobookConversionTagMode { get; set; }
         bool EbookConversionEnabled { get; set; }
