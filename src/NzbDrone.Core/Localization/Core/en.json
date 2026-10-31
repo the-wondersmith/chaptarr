@@ -879,6 +879,8 @@
   "ImportCustomFormatJsonLabel": "Custom Format JSON",
   "ImportCustomFormatUnableToLoad": "Unable to load custom formats",
   "ImportExtraFiles": "Import Extra Files",
+  "ImportAdditionalCopiesAsNewBooks": "Import Additional Copies As New Books",
+  "ImportAdditionalCopiesAsNewBooksHelpText": "When importing a file for a book that already has files, add it as a separate book instance instead of rejecting it. Leave disabled to keep the existing behaviour of only importing to books that are missing files",
   "ImportExtraFilesHelpText": "Import matching extra files (covers, cue sheets, metadata, etc) after importing a book file",
   "ImportFailedInterp": "Import failed: {0}",
   "ImportFailures": "Import failures",

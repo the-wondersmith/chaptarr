@@ -33,6 +33,7 @@ namespace Chaptarr.Api.V1.Config
         public int MinimumFreeSpaceWhenImporting { get; set; }
         public bool CopyUsingHardlinks { get; set; }
         public bool ImportExtraFiles { get; set; }
+        public bool ImportAdditionalCopiesAsNewBooks { get; set; }
         public string ExtraFileExtensions { get; set; }
     }
 
@@ -68,6 +69,7 @@ namespace Chaptarr.Api.V1.Config
                 MinimumFreeSpaceWhenImporting = model.MinimumFreeSpaceWhenImporting,
                 CopyUsingHardlinks = model.CopyUsingHardlinks,
                 ImportExtraFiles = model.ImportExtraFiles,
+                ImportAdditionalCopiesAsNewBooks = model.ImportAdditionalCopiesAsNewBooks,
                 ExtraFileExtensions = model.ExtraFileExtensions,
             };
         }

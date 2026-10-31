@@ -433,6 +433,7 @@ namespace NzbDrone.Core.Configuration.SettingsBackups
                     MinimumFreeSpaceWhenImporting = _configService.MinimumFreeSpaceWhenImporting,
                     CopyUsingHardlinks = _configService.CopyUsingHardlinks,
                     ImportExtraFiles = _configService.ImportExtraFiles,
+                    ImportAdditionalCopiesAsNewBooks = _configService.ImportAdditionalCopiesAsNewBooks,
                     ExtraFileExtensions = _configService.ExtraFileExtensions,
                     AudiobookConversionConcurrentConversions = _configService.AudiobookConversionConcurrentConversions,
                     AudiobookConversionMaxBitrate = _configService.AudiobookConversionMaxBitrate,
@@ -978,6 +979,7 @@ namespace NzbDrone.Core.Configuration.SettingsBackups
             _configService.MinimumFreeSpaceWhenImporting = mm.MinimumFreeSpaceWhenImporting;
             _configService.CopyUsingHardlinks = mm.CopyUsingHardlinks;
             _configService.ImportExtraFiles = mm.ImportExtraFiles;
+            _configService.ImportAdditionalCopiesAsNewBooks = mm.ImportAdditionalCopiesAsNewBooks;
             _configService.ExtraFileExtensions = mm.ExtraFileExtensions ?? string.Empty;
             var audiobookConversionConcurrentConversions = mm.AudiobookConversionConcurrentConversions > 0
                 ? mm.AudiobookConversionConcurrentConversions
