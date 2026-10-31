@@ -228,6 +228,24 @@ class MediaManagement extends Component {
                             />
                           </FormGroup> : null
                       }
+
+                      <FormGroup
+                        advancedSettings={advancedSettings}
+                        isAdvanced={true}
+                        size={sizes.MEDIUM}
+                      >
+                        <FormLabel>
+                          {translate('ImportAdditionalCopiesAsNewBooks')}
+                        </FormLabel>
+
+                        <FormInputGroup
+                          type={inputTypes.CHECK}
+                          name="importAdditionalCopiesAsNewBooks"
+                          helpText={translate('ImportAdditionalCopiesAsNewBooksHelpText')}
+                          onChange={onInputChange}
+                          {...settings.importAdditionalCopiesAsNewBooks}
+                        />
+                      </FormGroup>
                     </FieldSet>
                 }
 

@@ -247,6 +247,13 @@ namespace NzbDrone.Core.Configuration
             set { SetValue("ImportExtraFiles", value); }
         }
 
+        public bool ImportAdditionalCopiesAsNewBooks
+        {
+            get { return GetValueBoolean("ImportAdditionalCopiesAsNewBooks", false); }
+
+            set { SetValue("ImportAdditionalCopiesAsNewBooks", value); }
+        }
+
         public string ExtraFileExtensions
         {
             get { return GetValue("ExtraFileExtensions", "jpg,png,cue,m3u,opf"); }

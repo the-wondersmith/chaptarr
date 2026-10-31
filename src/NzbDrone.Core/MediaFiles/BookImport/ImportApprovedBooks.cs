@@ -344,8 +344,18 @@ namespace NzbDrone.Core.MediaFiles.BookImport
                 var filesToReplace = existingFiles.Any() && replaceExisting;
                 var manualReplaceExisting = replaceExisting && (downloadForced || bookDecisions.Any(d => d.Item?.IsManualImport == true));
 
-                _logger.Debug("[UPGRADE-CHECK] replaceExisting={0}, existingFiles.Any()={1}, filesToReplace={2}, UpgradeAllowed={3}",
-                    replaceExisting, existingFiles.Any(), filesToReplace, qualityProfile?.UpgradeAllowed ?? true);
+                // The [ADDITIONAL-COPY] route below exists to hold a second copy of a book the library
+                // already has, but no import can reach it on its own: replaceExisting=false leaves
+                // filesToReplace false so the gate is skipped, and replaceExisting=true sets
+                // manualReplaceExisting for manual/forced imports, which closes the gate again and falls
+                // through to a destructive replace. Opt in here to route a non-replacing import of a book
+                // that already has files to the additional-copy branch instead of rejecting it with
+                // "Edition already has files". Off by default; behaviour is unchanged unless enabled.
+                var addAsAdditionalCopy = existingFiles.Any() && !replaceExisting &&
+                                          _configService?.ImportAdditionalCopiesAsNewBooks == true;
+
+                _logger.Debug("[UPGRADE-CHECK] replaceExisting={0}, existingFiles.Any()={1}, filesToReplace={2}, UpgradeAllowed={3}, addAsAdditionalCopy={4}",
+                    replaceExisting, existingFiles.Any(), filesToReplace, qualityProfile?.UpgradeAllowed ?? true, addAsAdditionalCopy);
 
                     // Resolved before the call: conversion replaces bookDecisions with the generated
                     // file, so the source paths the id is derived from are gone afterwards.
@@ -431,7 +441,8 @@ namespace NzbDrone.Core.MediaFiles.BookImport
                     }
                 }
 
-                if (qualityProfile != null && filesToReplace && !qualityProfile.UpgradeAllowed && !manualReplaceExisting)
+                if ((qualityProfile != null && filesToReplace && !qualityProfile.UpgradeAllowed && !manualReplaceExisting) ||
+                    (addAsAdditionalCopy && newBookInstance == null))
                 {
                     // Check if any of the files in this batch already exist at their exact paths
                     var anyFilesAlreadyImported = false;

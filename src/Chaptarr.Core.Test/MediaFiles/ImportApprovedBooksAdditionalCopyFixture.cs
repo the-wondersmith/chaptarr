@@ -511,6 +511,7 @@ namespace Chaptarr.Core.Test.MediaFiles
             public int AudiobookConversionConcurrentConversions { get; set; } = 1;
             public int AudiobookConversionMaxCpuThreads { get; set; } = 4;
             public bool AudiobookConversionMergeMultiFileM4b { get; set; }
+            public bool ImportAdditionalCopiesAsNewBooks { get; set; }
 
             protected override object Invoke(MethodInfo targetMethod, object[] args)
             {
@@ -557,6 +558,11 @@ namespace Chaptarr.Core.Test.MediaFiles
                 if (targetMethod?.Name == "get_AudiobookConversionTagMode")
                 {
                     return "preserve";
+                }
+
+                if (targetMethod?.Name == "get_ImportAdditionalCopiesAsNewBooks")
+                {
+                    return ImportAdditionalCopiesAsNewBooks;
                 }
 
                 throw new NotImplementedException($"Unexpected call to IConfigService.{targetMethod?.Name}");
@@ -1393,6 +1399,173 @@ namespace Chaptarr.Core.Test.MediaFiles
                 if (Directory.Exists(tempDir))
                 {
                     Directory.Delete(tempDir, recursive: true);
+                }
+            }
+        }
+
+        [TestCase(true, TestName = "manual_import_of_an_extra_copy_should_mint_a_new_book_instance_when_enabled")]
+        [TestCase(false, TestName = "manual_import_of_an_extra_copy_should_be_rejected_when_disabled")]
+        public void should_honour_the_additional_copy_toggle_for_manual_imports(bool importAdditionalCopiesAsNewBooks)
+        {
+            var qualityProfile = new QualityProfile
+            {
+                Id = 1,
+                Name = "Ebooks",
+                ProfileType = ProfileType.Ebook,
+                UpgradeAllowed = true,
+                Items = new List<QualityProfileQualityItem>
+                {
+                    new() { Allowed = true, Quality = Quality.EPUB }
+                }
+            };
+
+            var author = new Author
+            {
+                Id = 42,
+                Name = "Terry Pratchett",
+                EbookRootFolderPath = "/ebooks",
+                EbookPath = "/ebooks/Terry Pratchett",
+                EbookQualityProfileId = qualityProfile.Id,
+                EbookQualityProfile = qualityProfile
+            };
+
+            var book = new Book
+            {
+                Id = 6031,
+                Title = "Guards! Guards!",
+                TitleSlug = "guards-guards",
+                CleanTitle = "guardsguards",
+                MediaType = BookMediaType.Ebook,
+                Author = author,
+                AuthorId = author.Id
+            };
+
+            var edition = new Edition
+            {
+                Id = 30425,
+                BookId = book.Id,
+                Book = book,
+                Title = "Guards! Guards!",
+                IsEbook = true,
+                ForeignEditionId = "hc:edition:30425"
+            };
+
+            var destinationDir = Path.Combine(TestContext.CurrentContext.WorkDirectory, $"additional-copy-toggle-{Guid.NewGuid():N}");
+            Directory.CreateDirectory(destinationDir);
+
+            // The library already holds a copy of this edition, which is what makes the plain
+            // manual import bounce off "Edition already has files".
+            var existingManagedPath = Path.Combine(destinationDir, "Guards! Guards!.epub");
+            File.WriteAllText(existingManagedPath, "existing epub");
+            var existingManagedFile = new BookFile
+            {
+                Id = 700,
+                Path = existingManagedPath,
+                EditionId = edition.Id,
+                Edition = edition,
+                Quality = new QualityModel { Quality = Quality.EPUB, Revision = new Revision() }
+            };
+
+            var mediaFileService = new StubMediaFileService();
+            mediaFileService.FilesByBook.Add(existingManagedFile);
+            mediaFileService.FilesByPath[existingManagedPath] = existingManagedFile;
+
+            // A free destination, so the additional-copy path has somewhere to land.
+            var mover = new StubMoveBookFiles
+            {
+                DestinationPath = Path.Combine(destinationDir, "Guards! Guards! (copy).epub")
+            };
+
+            var configProxy = DispatchProxy.Create<IConfigService, ConfigServiceProxy>();
+            var config = (ConfigServiceProxy)(object)configProxy;
+            config.SkipFreeSpaceCheckWhenImporting = true;
+            config.ImportAdditionalCopiesAsNewBooks = importAdditionalCopiesAsNewBooks;
+
+            var (bookService, bookProxy) = CreateBookService(new List<Book> { book });
+            var editionService = CreateEditionService(new List<Edition> { edition });
+
+            var service = new ImportApprovedBooks(
+                mediaFileService,
+                new StubMetadataTagService(),
+                new StubMediaInfoExtractor(),
+                Proxy<IAuthorService>(),
+                bookService,
+                editionService,
+                Proxy<IRecycleBinProvider>(),
+                Proxy<IExtraService>(),
+                mover,
+                Proxy<IHistoryService>(),
+                Proxy<NzbDrone.Core.Download.History.IDownloadHistoryService>(),
+                new NoOpEventAggregator(),
+                Proxy<IManageCommandQueue>(),
+                Proxy<ISeriesBookLinkService>(),
+                Proxy<ISeriesService>(),
+                Proxy<IQualityProfileService>(),
+                Proxy<IM4bConversionService>(),
+                LogManager.GetLogger("ImportApprovedBooksAdditionalCopyFixture"),
+                null,
+                null,
+                configProxy);
+
+            var localBook = new LocalBook
+            {
+                Path = "/downloads/Guards! Guards! (second copy)/Guards! Guards!.epub",
+                Book = book,
+                Author = author,
+                Edition = edition,
+                Quality = new QualityModel { Quality = Quality.EPUB, Revision = new Revision() },
+                Part = 1,
+                PartCount = 1,
+                IsManualImport = true
+            };
+
+            try
+            {
+                var results = service.Import(
+                    new List<ImportDecision<LocalBook>> { new(localBook) },
+                    replaceExisting: false,
+                    downloadClientItem: null,
+                    importMode: ImportMode.Copy,
+                    cancellationToken: CancellationToken.None);
+
+                Assert.That(results, Has.Count.EqualTo(1));
+
+                if (importAdditionalCopiesAsNewBooks)
+                {
+                    Assert.That(results[0].Result, Is.EqualTo(ImportResultType.Imported), () => string.Join("; ", results[0].Errors));
+
+                    var copyBook = bookProxy.InsertedBooks.Single();
+                    Assert.That(copyBook.Id, Is.Not.EqualTo(book.Id));
+                    Assert.That(copyBook.TitleSlug, Does.StartWith("guards-guards_copy_"));
+
+                    var copyEdition = ((EditionServiceProxy)(object)editionService).InsertedEditions.Single();
+                    Assert.That(copyEdition.BookId, Is.EqualTo(copyBook.Id));
+
+                    // The pre-existing copy must survive untouched: this route is additive, never a replace.
+                    Assert.That(mediaFileService.FilesByBook, Has.Count.EqualTo(2));
+                    Assert.That(mediaFileService.DeletedFiles, Is.Empty);
+                    Assert.That(File.Exists(existingManagedPath), Is.True);
+
+                    var importedFile = mediaFileService.FilesByBook.Single(f => f.Id != existingManagedFile.Id);
+                    Assert.That(importedFile.EditionId, Is.EqualTo(copyEdition.Id));
+                    Assert.That(mover.CopyCalls, Is.EqualTo(1));
+                    Assert.That(mover.MoveCalls, Is.Zero);
+                }
+                else
+                {
+                    Assert.That(results[0].Result, Is.EqualTo(ImportResultType.Skipped));
+                    Assert.That(results[0].Errors.Single(), Does.Contain("Edition already has files"));
+                    Assert.That(bookProxy.InsertedBooks, Is.Empty);
+                    Assert.That(mediaFileService.FilesByBook.Single().Id, Is.EqualTo(existingManagedFile.Id));
+                    Assert.That(mover.CopyCalls, Is.Zero);
+                    Assert.That(mover.MoveCalls, Is.Zero);
+                }
+            }
+            finally
+            {
+                if (Directory.Exists(destinationDir))
+                {
+                    Directory.Delete(destinationDir, recursive: true);
                 }
             }
         }
