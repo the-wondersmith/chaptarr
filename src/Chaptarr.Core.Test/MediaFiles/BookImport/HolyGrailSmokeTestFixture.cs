@@ -4359,6 +4359,73 @@ namespace Chaptarr.Core.Test.MediaFiles.BookImport
 		            Assert.That(match.EditionId, Is.EqualTo(20));
 		        }
 
+        [Test]
+        public void should_not_let_a_freeform_atom_series_name_prove_a_title_the_title_tag_contradicts()
+        {
+            // Reproduces "In the Devil Wind" importing as Sandman Slim #1. The MP4 freeform atom
+            // flattens publisher, language, ASIN and series name into one key, and its "Sandman Slim"
+            // value was accepted as title containment proof even though TITLE and ALBUM both name a
+            // different work. The series narrator corroborated every edition in the series and the
+            // 923s duration gap (tolerance 754s) was recorded as conflicting but never consulted, so
+            // the atom was the only thing holding the match up.
+            var logger = LogManager.GetCurrentClassLogger();
+            var containment = new ContainmentValidator(new TagNormalizer(), logger);
+            var fts = new StubEditionFtsRepository(new List<EditionFtsMatch>
+            {
+                new EditionFtsMatch
+                {
+                    EditionId = 47899,
+                    BookId = 10670,
+                    EditionTitle = "Sandman Slim",
+                    BookTitle = "Sandman Slim",
+                    AuthorId = 150,
+                    AuthorName = "Richard Kadrey",
+                    NarratorNames = "MacLeod Andrews",
+                    DurationSeconds = 37680,
+                    MatchScore = 20.0,
+                }
+            });
+
+            var authorService = new StubAuthorService(new Author { Id = 150, Name = "Richard Kadrey" });
+
+            var svc = new FileMatchingService(
+                matchingLogger: null,
+                v5MatchingService: null,
+                containmentValidator: containment,
+                pendingAuthorImportService: null,
+                commandQueue: null,
+                authorFolderMatchingService: null,
+                rootFolderService: null,
+                configService: ConfigServiceTestProxy.Create(),
+                authorService: authorService,
+                eventAggregator: null,
+                authorLibraryService: null,
+                editionFtsRepository: fts,
+                bookService: null,
+                editionService: null,
+                editionRepository: null,
+                mediaInfoExtractor: null,
+                logger: logger);
+
+            var file = new DiscoveredFileWithMetadata
+            {
+                Path = "/incoming/audiobooks/Richard Kadrey - In the Devil Wind (2026)/Richard Kadrey - In the Devil Wind (2026).m4b",
+                DurationSeconds = 36757,
+                AllTags = new Dictionary<string, List<string>>
+                {
+                    { "TITLE", new List<string> { "In the Devil Wind" } },
+                    { "ALBUM", new List<string> { "In the Devil Wind" } },
+                    { "ARTIST", new List<string> { "Richard Kadrey" } },
+                    { "COMPOSER", new List<string> { "MacLeod Andrews" } },
+                    { "MP4:----", new List<string> { "A Novel", "English", "B0GNTY1SWC", "Sandman Slim", "Harper Voyager" } },
+                }
+            };
+
+            var match = svc.HolyGrailMatchFile(file, BookMediaType.Audiobook, restrictToAuthorId: 150);
+
+            Assert.That(match, Is.Null, "a flattened freeform atom must not out-vote the dedicated title field");
+        }
+
 		        [Test]
 		        public void should_match_when_album_is_clean_even_if_title_contains_packaging_noise()
 		        {
