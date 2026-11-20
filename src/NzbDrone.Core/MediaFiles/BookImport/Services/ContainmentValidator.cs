@@ -83,6 +83,52 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Services
 	            return FileMatchingService.IsExcludedFromMatching(key);
 	        }
 
+        // An MP4 freeform atom ("----") flattens unrelated values under one key: publisher,
+        // language, ASIN, series name and series position all arrive together. One of those
+        // values matching a candidate title is therefore not title evidence on its own.
+        private static bool IsFlattenedFreeformTagKey(string key)
+        {
+            return key != null && key.StartsWith("MP4:----", StringComparison.OrdinalIgnoreCase);
+        }
+
+        // Fields that actually name the work, as opposed to carrying it incidentally.
+        private static bool IsDedicatedTitleTagKey(string key)
+        {
+            return key != null &&
+                   (key.Equals("TITLE", StringComparison.OrdinalIgnoreCase) ||
+                    key.Equals("MP4:©nam", StringComparison.OrdinalIgnoreCase) ||
+                    key.Equals("©nam", StringComparison.OrdinalIgnoreCase));
+        }
+
+        // Honour a freeform atom as title proof only when nothing better contradicts it. Where a
+        // dedicated title field is present but supports a different work, trusting the atom is how
+        // a series name passes for a book title - "In the Devil Wind", whose TITLE and ©nam both
+        // said so, matched "Sandman Slim" purely because the atom also carried the series name.
+        // When no dedicated title field exists at all, the atom remains the best evidence available.
+        private List<EditionTitleEvidence> FilterUnsupportedFlattenedFreeformEvidence(
+            List<EditionTitleEvidence> evidence,
+            IDictionary<string, List<string>> allTags,
+            string editionTitle)
+        {
+            if (evidence.Count == 0 ||
+                !evidence.Any(e => IsFlattenedFreeformTagKey(e.FieldName)) ||
+                evidence.Any(e => IsDedicatedTitleTagKey(e.FieldName)) ||
+                !allTags.Keys.Any(IsDedicatedTitleTagKey))
+            {
+                return evidence;
+            }
+
+            var filtered = evidence.Where(e => !IsFlattenedFreeformTagKey(e.FieldName)).ToList();
+
+            if (filtered.Count != evidence.Count && _logger.IsTraceEnabled)
+            {
+                _logger.Trace("[CONTAINMENT] Edition '{0}' freeform-atom title evidence ignored: a dedicated title field is present and does not name this work",
+                    TrimTitleForLog(editionTitle));
+            }
+
+            return filtered;
+        }
+
         // Structural words that may appear in metadata server titles but are sometimes absent from embedded tags.
         // We only treat these as optional when the title also contains a numeric token (e.g., "Season 3").
         private static readonly HashSet<string> EditionStructuralTokensOptionalWhenNumberPresent = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
@@ -353,6 +399,8 @@ namespace NzbDrone.Core.MediaFiles.BookImport.Services
                     }
                 }
             }
+
+            evidence = FilterUnsupportedFlattenedFreeformEvidence(evidence, allTags, editionTitle);
 
             if (evidence.Count > 0)
             {
