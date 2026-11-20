@@ -1,11 +1,14 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text.Json;
 using System.IO;
 using NLog;
 using NzbDrone.Common.Crypto;
 using NzbDrone.Common.Disk;
 using NzbDrone.Core.Books;
+using NzbDrone.Core.CustomFormats;
+using NzbDrone.Core.Datastore;
 using NzbDrone.Core.Download;
 using NzbDrone.Core.Download.TrackedDownloads;
 using NzbDrone.Core.History;
@@ -20,7 +23,7 @@ namespace NzbDrone.Core.Queue
 {
     public interface IQueueService
     {
-        List<Queue> GetQueue();
+        List<Queue> GetQueue(bool includeConversionStatus = true);
         Queue Find(int id);
         void Remove(int id);
     }
@@ -32,6 +35,7 @@ namespace NzbDrone.Core.Queue
         private readonly IEventAggregator _eventAggregator;
         private static List<Queue> _queue = new();
         private readonly IHistoryService _historyService;
+        private readonly ICustomFormatCalculationService _formatCalculator;
         private readonly IConversionTrackingService _conversionTrackingService;
         private readonly IConversionJobService _conversionJobService;
         private readonly IDiskProvider _diskProvider;
@@ -40,31 +44,50 @@ namespace NzbDrone.Core.Queue
 
         public QueueService(IEventAggregator eventAggregator,
                             IHistoryService historyService,
+                            ICustomFormatCalculationService formatCalculator,
                             IConversionTrackingService conversionTrackingService = null,
                             IDiskProvider diskProvider = null,
                             IConversionJobService conversionJobService = null)
         {
             _eventAggregator = eventAggregator;
             _historyService = historyService;
+            _formatCalculator = formatCalculator;
             _conversionTrackingService = conversionTrackingService;
             _conversionJobService = conversionJobService;
             _diskProvider = diskProvider;
         }
 
-        public List<Queue> GetQueue()
+        public List<Queue> GetQueue(bool includeConversionStatus = true)
         {
             var queue = _queue
                 .Select(CloneQueueItem)
                 .ToList();
 
-            ApplyConversionStatuses(queue);
-            queue.AddRange(BuildUntrackedConversionQueue(queue));
+            if (includeConversionStatus)
+            {
+                ApplyConversionStatuses(queue);
+                queue.AddRange(BuildUntrackedConversionQueue(queue));
+            }
             return queue;
         }
 
         public Queue Find(int id)
         {
-            return GetQueue().SingleOrDefault(q => q.Id == id);
+            var matches = _queue.Where(item => item.Id == id).Take(2).ToList();
+            if (matches.Count > 1)
+            {
+                throw new ModelConflictException(typeof(Queue), id, "matches multiple tracked items; no item was selected");
+            }
+
+            if (matches.Count == 1)
+            {
+                return CloneQueueItem(matches[0]);
+            }
+
+            // Untracked conversions never enter _queue; GetQueue synthesises them with a
+            // hashed id and CancelConversion resolves that id through Find, so a tracked-only
+            // lookup would 404 every untracked conversion the UI offers to cancel.
+            return BuildUntrackedConversionQueue(_queue).FirstOrDefault(item => item.Id == id);
         }
 
         public void Remove(int id)
@@ -179,6 +202,14 @@ namespace NzbDrone.Core.Queue
             var conversionTarget = QualityConversionHelper.GetPlannedConversionTarget(author, quality);
             var activeConversion = _conversionTrackingService?.Get(trackedDownload.DownloadItem.DownloadId);
 
+            var remoteBook = trackedDownload.RemoteBook;
+            if (remoteBook?.AlternativeCopies == true && book != null)
+            {
+                remoteBook = remoteBook.ForBooks(new[] { book });
+                remoteBook.CustomFormats = _formatCalculator.ParseCustomFormat(remoteBook, trackedDownload.DownloadItem.TotalSize);
+                remoteBook.CustomFormatScore = remoteBook.GetQualityProfile()?.CalculateCustomFormatScore(remoteBook.CustomFormats) ?? 0;
+            }
+
             var queue = new Queue
             {
                 Author = author,
@@ -194,7 +225,7 @@ namespace NzbDrone.Core.Queue
                 TrackedDownloadState = trackedDownload.State,
                 StatusMessages = trackedDownload.StatusMessages.ToList(),
                 ErrorMessage = GetQueueErrorMessage(trackedDownload),
-                RemoteBook = trackedDownload.RemoteBook,
+                RemoteBook = remoteBook,
                 DownloadId = trackedDownload.DownloadItem.DownloadId,
                 TargetBookIds = GetTargetBookIds(grabHistory, trackedDownload, book),
                 ConversionStatus = activeConversion?.Status,
@@ -204,6 +235,7 @@ namespace NzbDrone.Core.Queue
                 ConversionMessage = activeConversion?.Message ?? GetConversionMessage(quality, conversionTarget),
                 CanCancelConversion = IsCancellableConversion(activeConversion),
                 CanRetryImport = CanRetryImport(trackedDownload),
+                AwaitingImportConfirmation = trackedDownload.State == TrackedDownloadState.ImportBlocked && trackedDownload.AwaitingImportConfirmation,
                 Protocol = trackedDownload.Protocol,
                 DownloadClient = trackedDownload.DownloadItem.DownloadClientInfo.Name,
                 Indexer = trackedDownload.Indexer ?? GetHistoryData(history, EntityHistory.INDEXER),
@@ -256,6 +288,7 @@ namespace NzbDrone.Core.Queue
                 ConversionMessage = queue.ConversionMessage,
                 CanCancelConversion = queue.CanCancelConversion,
                 CanRetryImport = queue.CanRetryImport,
+                AwaitingImportConfirmation = queue.AwaitingImportConfirmation,
                 RemoteBook = queue.RemoteBook,
                 Protocol = queue.Protocol,
                 DownloadClient = queue.DownloadClient,
@@ -491,9 +524,7 @@ namespace NzbDrone.Core.Queue
                 .Where(history => !string.IsNullOrWhiteSpace(history.DownloadId))
                 .GroupBy(history => history.DownloadId, StringComparer.OrdinalIgnoreCase))
             {
-                grabbedHistoryByDownloadId[group.Key] = group
-                    .OrderByDescending(h => h.Date)
-                    .ToList();
+                grabbedHistoryByDownloadId[group.Key] = RemoteBook.GetCapturedGrabHistory(group);
             }
 
             return grabbedHistoryByDownloadId;
@@ -511,9 +542,7 @@ namespace NzbDrone.Core.Queue
                 return grabHistory ?? new List<EntityHistory>();
             }
 
-            return _historyService.Find(downloadId, EntityHistoryEventType.Grabbed)
-                .OrderByDescending(h => h.Date)
-                .ToList();
+            return RemoteBook.GetCapturedGrabHistory(_historyService.Find(downloadId, EntityHistoryEventType.Grabbed));
         }
 
         private void ApplyConversionStatuses(List<Queue> queue)
@@ -523,9 +552,21 @@ namespace NzbDrone.Core.Queue
                 return;
             }
 
+            var jobs = (_conversionJobService?.Get(queue.Select(item => item.DownloadId)) ?? new List<ConversionJob>())
+                .ToDictionary(job => job.DownloadId, StringComparer.OrdinalIgnoreCase);
+            var bookIds = jobs.Values.ToDictionary(job => job.DownloadId, job =>
+            {
+                try { return JsonSerializer.Deserialize<ConversionJobRequest>(job.RequestJson ?? "{}")?.BookId ?? 0; }
+                catch (JsonException) { return 0; }
+            }, StringComparer.OrdinalIgnoreCase);
             foreach (var item in queue)
             {
-                var durableJob = _conversionJobService?.Get(item.DownloadId);
+                var durableJob = item.DownloadId != null ? jobs.GetValueOrDefault(item.DownloadId) : null;
+                if (durableJob != null && item.Book != null && bookIds[durableJob.DownloadId] > 0 && bookIds[durableJob.DownloadId] != item.Book.Id)
+                {
+                    // A pack's other book keeps its own planned state; it cannot inherit this group's failure.
+                    continue;
+                }
                 if (durableJob != null && durableJob.Status != ConversionJobStatus.Completed)
                 {
                     item.ConversionStatus = GetConversionJobStatus(durableJob.Status);
@@ -658,6 +699,7 @@ namespace NzbDrone.Core.Queue
         {
             return trackedDownload?.DownloadItem?.Status == DownloadItemStatus.Completed &&
                    trackedDownload.State == TrackedDownloadState.ImportBlocked &&
+                   !trackedDownload.AwaitingImportConfirmation &&
                    !string.IsNullOrWhiteSpace(trackedDownload.DownloadItem.DownloadId);
         }
 
@@ -768,8 +810,9 @@ namespace NzbDrone.Core.Queue
         private static bool ShouldIncludeTrackedDownload(TrackedDownload trackedDownload)
         {
             return trackedDownload?.IsTrackable == true &&
-                   trackedDownload.State != TrackedDownloadState.Imported &&
-                   trackedDownload.State != TrackedDownloadState.DownloadFailed &&
+                   (trackedDownload.CleanupDeletionRefused ||
+                    ((trackedDownload.State != TrackedDownloadState.Imported || trackedDownload.CleanupCheckFailed) &&
+                     trackedDownload.State != TrackedDownloadState.DownloadFailed)) &&
                    trackedDownload.State != TrackedDownloadState.Ignored;
         }
 

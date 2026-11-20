@@ -9,6 +9,7 @@ using NzbDrone.Common.Http.Proxy;
 using NzbDrone.Core.Configuration.Events;
 using NzbDrone.Core.Languages;
 using NzbDrone.Core.MediaFiles;
+using NzbDrone.Core.MediaCover;
 using NzbDrone.Core.Messaging.Events;
 using NzbDrone.Core.Qualities;
 using NzbDrone.Core.RootFolders;
@@ -74,7 +75,19 @@ namespace NzbDrone.Core.Configuration
                 }
             }
 
-            _eventAggregator.PublishEvent(new ConfigSavedEvent());
+            _eventAggregator.PublishEvent(new ConfigSavedEvent
+            {
+                BookCoverCleanupRequired = (CoverDownloadScope)allWithDefaults[nameof(CoverDownloadScope)] != CoverDownloadScope &&
+                                           CoverDownloadScope == CoverDownloadScope.LibraryBooks
+            });
+        }
+
+        public string GetConversionOrphanReviewProgress() => GetValue("ConversionOrphanReviewProgress", string.Empty);
+
+        public void SetConversionOrphanReviewProgress(string value)
+        {
+            if (GetConversionOrphanReviewProgress() != value)
+                SetValue("ConversionOrphanReviewProgress", value);
         }
 
         public bool IsDefined(string key)
@@ -554,6 +567,12 @@ namespace NzbDrone.Core.Configuration
             set { SetValue("AddNewDefaultMediaType", (value ?? string.Empty).Trim().ToLowerInvariant()); }
         }
 
+        public CoverDownloadScope CoverDownloadScope
+        {
+            get { return GetValueEnum("CoverDownloadScope", CoverDownloadScope.AllBooks); }
+            set { SetValue("CoverDownloadScope", value); }
+        }
+
         public bool CleanupMetadataImages
         {
             get { return GetValueBoolean("CleanupMetadataImages", true); }
@@ -619,36 +638,12 @@ namespace NzbDrone.Core.Configuration
 
         public int BackupRetention => GetValueInt("BackupRetention", 28);
 
+        public bool BackupIncludeLogsAndCache => GetValueBoolean("BackupIncludeLogsAndCache", false);
+
         public CertificateValidationType CertificateValidation =>
             GetValueEnum("CertificateValidation", CertificateValidationType.Enabled);
 
         public string ApplicationUrl => GetValue("ApplicationUrl", string.Empty);
-
-        public bool TrustCgnatIpAddresses
-        {
-            get { return GetValueBoolean("TrustCgnatIpAddresses", false); }
-            set { SetValue("TrustCgnatIpAddresses", value); }
-        }
-
-        // This fork publishes its releases on GitHub and has no Services update backend, so the
-        // cloud endpoint can never answer for it. Default to the GitHub provider.
-        public bool UseGitHubUpdates
-        {
-            get { return GetValueBoolean("UseGitHubUpdates", true); }
-            set { SetValue("UseGitHubUpdates", value); }
-        }
-
-        public string GitHubOwner
-        {
-            get { return GetValue("GitHubOwner", "chaptarr"); }
-            set { SetValue("GitHubOwner", value); }
-        }
-
-        public string GitHubRepo
-        {
-            get { return GetValue("GitHubRepo", "chaptarr"); }
-            set { SetValue("GitHubRepo", value); }
-        }
 
         private string GetValue(string key)
         {

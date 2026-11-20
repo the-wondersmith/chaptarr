@@ -38,6 +38,10 @@ namespace Chaptarr.Core.Test.Queue
             var queue = new QueueService(
                 new NoOpEventAggregator(),
                 DispatchProxy.Create<IHistoryService, ThrowingProxy<IHistoryService>>(),
+
+                // Untracked conversion rows are synthesised from the tracker, not scored, so the
+                // format calculator is never reached on this path.
+                null,
                 tracking);
 
             return (queue, tracking, $"local-{Guid.NewGuid():N}");
