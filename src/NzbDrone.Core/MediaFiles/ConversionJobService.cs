@@ -16,6 +16,7 @@ using NzbDrone.Core.Download.History;
 using NzbDrone.Core.Download.TrackedDownloads;
 using NzbDrone.Core.History;
 using NzbDrone.Core.Lifecycle;
+using NzbDrone.Core.MediaFiles.Commands;
 using NzbDrone.Core.Messaging.Commands;
 using NzbDrone.Core.Messaging.Events;
 using NzbDrone.Core.RootFolders;
@@ -1753,12 +1754,68 @@ namespace NzbDrone.Core.MediaFiles
             try
             {
                 ReleaseBlockedImport(downloadId);
+                QueueUntrackedConversionImports();
                 _commandQueue.Push(new ProcessMonitoredDownloadsCommand(), CommandPriority.High);
             }
             catch (Exception ex)
             {
                 _logger.Warn(ex, "Unable to queue completed-download import after conversion state changed");
             }
+        }
+
+        // `ProcessMonitoredDownloads` only ever walks tracked downloads, so a conversion started
+        // without a download-client item - a folder scan, or a manual import - has nothing for the
+        // sweep to find and would sit at ready-to-import forever. Re-scan the folder its sources
+        // came from instead: ImportApprovedBooks re-derives the same conversion id from the book and
+        // its ordered source paths, finds this completed job, and imports the artifact in place of
+        // the sources.
+        //
+        // Swept by status rather than by the id the caller happened to pass, because every
+        // transition into ready-to-import reports it without one. Re-pushing a scan for a path that
+        // is already queued or running is free: the command queue returns the existing command.
+        private void QueueUntrackedConversionImports()
+        {
+            List<ConversionJob> ready;
+
+            try
+            {
+                ready = _repository.ByStatus(ConversionJobStatus.ReadyToImport);
+            }
+            catch (Exception ex)
+            {
+                _logger.Warn(ex, "Unable to list conversions waiting to import; tracked downloads are unaffected");
+                return;
+            }
+
+            foreach (var job in ready.Where(job => ConversionWorkPath.IsLocalConversionId(job?.DownloadId)))
+            {
+                var sourceFolder = GetConversionSourceFolder(DeserializeRequest(job));
+
+                if (sourceFolder.IsNullOrWhiteSpace() || !_diskProvider.FolderExists(sourceFolder))
+                {
+                    _logger.Warn("Untracked conversion {0} is ready to import but its source folder is no longer available; import it manually", job.DownloadId);
+                    continue;
+                }
+
+                _logger.Debug("[CONVERSION] Queueing a direct import scan of {0} for untracked conversion {1}", sourceFolder, job.DownloadId);
+                _commandQueue.Push(new DownloadedBooksScanCommand { Path = sourceFolder }, CommandPriority.High);
+            }
+        }
+
+        // Only a single unambiguous parent counts. Sources spread across folders give the scan no
+        // one path to re-enter from, and guessing one risks importing an unrelated neighbour.
+        // internal static for direct testing (InternalsVisibleTo Chaptarr.Core.Test).
+        internal static string GetConversionSourceFolder(ConversionJobRequest request)
+        {
+            var folders = request?.Sources?
+                .Select(source => source?.Path)
+                .Where(path => path.IsNotNullOrWhiteSpace())
+                .Select(Path.GetDirectoryName)
+                .Where(folder => folder.IsNotNullOrWhiteSpace())
+                .Distinct(PathEqualityComparer.Instance)
+                .ToList();
+
+            return folders?.Count == 1 ? folders[0] : null;
         }
 
         // `ProcessMonitoredDownloads` skips anything that is not still `Downloading`,

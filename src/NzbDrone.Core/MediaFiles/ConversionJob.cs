@@ -16,6 +16,17 @@ namespace NzbDrone.Core.MediaFiles
 
     internal static class ConversionWorkPath
     {
+        // A conversion started without a download-client item still needs a stable key, so
+        // ImportApprovedBooks derives one with this prefix. It is what makes an untracked
+        // conversion recognisable later, when deciding how its finished output gets imported:
+        // ProcessMonitoredDownloads only ever walks tracked downloads.
+        internal const string LocalConversionIdPrefix = "local-";
+
+        internal static bool IsLocalConversionId(string downloadId)
+        {
+            return downloadId?.StartsWith(LocalConversionIdPrefix, StringComparison.OrdinalIgnoreCase) == true;
+        }
+
         internal static bool IsWorkPath(string path)
         {
             return !string.IsNullOrWhiteSpace(path) && path.Split(new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar }, StringSplitOptions.RemoveEmptyEntries)

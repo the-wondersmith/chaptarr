@@ -2104,7 +2104,7 @@ namespace NzbDrone.Core.MediaFiles.BookImport
 
                 var key = $"{book?.Id}|{string.Join("|", sources)}";
 
-                return "local-" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(key)))[..16].ToLowerInvariant();
+                return ConversionWorkPath.LocalConversionIdPrefix + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(key)))[..16].ToLowerInvariant();
             }
 
             private (List<ImportDecision<LocalBook>> Decisions, string WorkFolder, bool Failed, string Error, ConversionJob BypassedJob) ConvertBookGroupIfNeeded(
