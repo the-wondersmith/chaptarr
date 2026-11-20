@@ -2172,7 +2172,20 @@ namespace NzbDrone.Core.MediaFiles.BookImport
                 }
 
                 var targetQuality = QualityConversionHelper.GetPlannedConversionTarget(author, first?.Quality);
-                if (!manualImport && targetQuality != Qualities.Quality.M4B)
+
+                // A chapterized release - many separate .m4b files that should end up as one - has no
+                // planned conversion target, because its container already matches the profile. The
+                // converter can still merge it (CanConvert accepts .m4b as input), so the opt-in
+                // setting gates it instead. This has to be known before the target-quality gate below,
+                // or a merge is dropped before it is ever considered. Merging is opt-in because a
+                // multi-file .m4b set can equally be a legitimate multi-part release.
+                var isEntirelyM4b = inputFiles.All(p => Path.GetExtension(p).Equals(".m4b", StringComparison.OrdinalIgnoreCase));
+                var isChapterizedM4bMerge = isEntirelyM4b &&
+                                            inputFiles.Length > 1 &&
+                                            _configService?.AudiobookConversionMergeMultiFileM4b == true &&
+                                            QualityConversionHelper.TargetsM4bConversion(qualityProfile);
+
+                if (!manualImport && targetQuality != Qualities.Quality.M4B && !isChapterizedM4bMerge)
                     return (bookDecisions, null, false, null, null);
 
                 var existingJob = conversionJob;
@@ -2224,12 +2237,6 @@ namespace NzbDrone.Core.MediaFiles.BookImport
                 // capable of merging, since CanConvert accepts .m4b as input. Merging those is opt-in,
                 // because a multi-file .m4b set can equally be a legitimate multi-part release the user
                 // wants left alone.
-                var isEntirelyM4b = inputFiles.All(p => Path.GetExtension(p).Equals(".m4b", StringComparison.OrdinalIgnoreCase));
-                var isChapterizedM4bMerge = isEntirelyM4b &&
-                                            inputFiles.Length > 1 &&
-                                            _configService?.AudiobookConversionMergeMultiFileM4b == true &&
-                                            QualityConversionHelper.TargetsM4bConversion(qualityProfile);
-
                 if (targetQuality != Qualities.Quality.M4B && !isChapterizedM4bMerge)
                 {
                     return (bookDecisions, null, false, null, null);
