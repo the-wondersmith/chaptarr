@@ -46,6 +46,7 @@ namespace Chaptarr.Core.Test.Configuration
             ["NzbDrone.Core.History.HistoryService.downloadHistoryRepository"] = "Existing optional dependency retained until its callers are migrated.",
             ["NzbDrone.Core.MediaCover.MediaCoverService.authorService"] = "Existing optional dependency retained until its callers are migrated.",
             ["NzbDrone.Core.MediaFiles.ConversionJobService.historyService"] = "Existing optional dependency retained until its callers are migrated.",
+            ["NzbDrone.Core.MediaFiles.ConversionJobService.trackedDownloadService"] = "Only used to hand a blocked import back to the pipeline after a conversion state change; the service degrades to the ordinary sweep when it is absent.",
             ["NzbDrone.Core.MediaFiles.MetadataTagService.fileTagCache"] = "Existing optional dependency retained until its callers are migrated.",
             ["NzbDrone.Core.MediaFiles.MediaFileService.rootFolderService"] = "Existing optional dependency retained until its callers are migrated.",
             ["NzbDrone.Core.MediaFiles.MediaFileService.replacementFiles"] = "Existing optional dependency retained until its callers are migrated.",
