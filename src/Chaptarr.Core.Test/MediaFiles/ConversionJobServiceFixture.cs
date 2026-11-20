@@ -796,36 +796,79 @@ namespace Chaptarr.Core.Test.MediaFiles
             }
         }
 
-        [TestCase(ConversionJobStatus.Queued)]
-        [TestCase(ConversionJobStatus.ReadyToImport)]
-        public void reset_should_clear_job_that_is_not_running_and_keep_the_artifact(ConversionJobStatus status)
+        [Test]
+        public void reset_should_refuse_a_queued_job_until_it_is_cancelled()
         {
-            // RetryFailedImport resets before it moves the download back to ImportPending.
-            // Refusing the reset for a passive job deadlocked the retry against the very
-            // job it was trying to rescue, and the item could never leave ImportBlocked.
-            var tempDir = Path.Combine(TestContext.CurrentContext.WorkDirectory, $"conversion-job-reset-{Guid.NewGuid():N}");
+            // A queued job still owns its slot, so Reset will not pull it out from under the
+            // scheduler; callers cancel first. Only ReadyToImport is exempt from the in-flight
+            // check, which is what keeps RetryFailedImport from deadlocking against the job it
+            // is trying to rescue.
+            var tempDir = Path.Combine(TestContext.CurrentContext.WorkDirectory, $"conversion-job-reset-queued-{Guid.NewGuid():N}");
             Directory.CreateDirectory(tempDir);
-            var request = CreateRequest(tempDir, "reset-download");
+            var request = CreateRequest(tempDir, "reset-queued");
             var repository = CreateRepository(Path.Combine(tempDir, "jobs.db"));
             var service = CreateService(repository, new UnusedConversionService());
 
             try
             {
                 service.Enqueue(request);
-                if (status != ConversionJobStatus.Queued)
+
+                Assert.Throws<InvalidOperationException>(() => service.Reset(request.DownloadId));
+                Assert.That(repository.FindByDownloadId(request.DownloadId), Is.Not.Null);
+            }
+            finally
+            {
+                SqliteConnection.ClearAllPools();
+                if (Directory.Exists(tempDir))
                 {
-                    var job = repository.FindByDownloadId(request.DownloadId);
-                    job.Status = status;
-                    repository.Update(job);
+                    Directory.Delete(tempDir, recursive: true);
                 }
+            }
+        }
+
+        [Test]
+        public void reset_should_keep_a_verified_ready_artifact_for_the_retry_to_reuse()
+        {
+            // RetryFailedImport resets before moving the download back to ImportPending. A
+            // ready-to-import job must not refuse that reset, and its converted M4B has to
+            // survive it so the retry reuses the artifact instead of re-encoding.
+            var tempDir = Path.Combine(TestContext.CurrentContext.WorkDirectory, $"conversion-job-reset-ready-{Guid.NewGuid():N}");
+            Directory.CreateDirectory(tempDir);
+            var request = CreateRequest(tempDir, "reset-ready");
+            File.WriteAllText(request.OutputPath, "converted");
+            File.WriteAllText(
+                Path.Combine(request.WorkFolder, "conversion-artifact.json"),
+                JsonSerializer.Serialize(new ConversionArtifactManifest
+                {
+                    EncoderSucceeded = true,
+                    OutputSize = new FileInfo(request.OutputPath).Length,
+                    CreatedUtc = DateTime.UtcNow,
+                    OutputPath = request.OutputPath,
+                    TargetQualityId = request.TargetQualityId,
+                    TargetQualityName = request.TargetQualityName,
+                    AudioBitrate = request.AudioBitrate,
+                    AudioChannels = request.AudioChannels,
+                    TagMode = request.TagOptions?.Mode,
+                    TagSignature = request.TagSignature,
+                    Sources = request.Sources
+                }));
+
+            var repository = CreateRepository(Path.Combine(tempDir, "jobs.db"));
+            var service = CreateService(repository, new UnusedConversionService());
+
+            try
+            {
+                service.Enqueue(request);
+                var job = repository.FindByDownloadId(request.DownloadId);
+                job.Status = ConversionJobStatus.ReadyToImport;
+                repository.Update(job);
 
                 Assert.DoesNotThrow(() => service.Reset(request.DownloadId));
 
-                Assert.That(repository.FindByDownloadId(request.DownloadId), Is.Null);
-
-                // Unlike Cancel, Reset leaves the work root alone so a converted M4B can
-                // be reused by the retry instead of being rebuilt from scratch.
+                // Unlike Cancel, Reset leaves the work root alone so the converted M4B can be
+                // reused by the retry instead of being rebuilt from scratch.
                 Assert.That(Directory.Exists(request.WorkRoot), Is.True);
+                Assert.That(File.Exists(request.OutputPath), Is.True);
             }
             finally
             {

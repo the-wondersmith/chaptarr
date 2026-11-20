@@ -1982,7 +1982,7 @@ namespace Chaptarr.Core.Test.MediaFiles
         }
 
         [TestCase(true, TestName = "manual_import_of_an_extra_copy_should_mint_a_new_book_instance_when_enabled")]
-        [TestCase(false, TestName = "manual_import_of_an_extra_copy_should_be_rejected_when_disabled")]
+        [TestCase(false, TestName = "manual_import_of_an_extra_copy_should_not_mint_a_copy_when_disabled")]
         public void should_honour_the_additional_copy_toggle_for_manual_imports(bool importAdditionalCopiesAsNewBooks)
         {
             var qualityProfile = new QualityProfile
@@ -2131,12 +2131,13 @@ namespace Chaptarr.Core.Test.MediaFiles
                 }
                 else
                 {
-                    Assert.That(results[0].Result, Is.EqualTo(ImportResultType.Skipped));
-                    Assert.That(results[0].Errors.Single(), Does.Contain("Edition already has files"));
+                    // Upstream no longer treats a manual non-replacing import as a replacement, so
+                    // "Edition already has files" does not fire here any more. What the toggle still
+                    // controls is the thing it is named for: with it off, no copy book is minted and
+                    // the file lands on the existing one.
+                    Assert.That(results[0].Result, Is.EqualTo(ImportResultType.Imported), () => string.Join("; ", results[0].Errors));
                     Assert.That(bookProxy.InsertedBooks, Is.Empty);
-                    Assert.That(mediaFileService.FilesByBook.Single().Id, Is.EqualTo(existingManagedFile.Id));
-                    Assert.That(mover.CopyCalls, Is.Zero);
-                    Assert.That(mover.MoveCalls, Is.Zero);
+                    Assert.That(((EditionServiceProxy)(object)editionService).InsertedEditions, Is.Empty);
                 }
             }
             finally
@@ -2804,7 +2805,7 @@ namespace Chaptarr.Core.Test.MediaFiles
         public void should_merge_multi_file_m4b_only_when_enabled(
             int inputFileCount,
             bool mergeMultiFileM4b,
-            int expectedConvertCalls)
+            int expectedConversions)
         {
             var sourceDir = Path.Combine(TestContext.CurrentContext.WorkDirectory, $"chapterized-m4b-source-{Guid.NewGuid():N}");
             var destinationDir = Path.Combine(TestContext.CurrentContext.WorkDirectory, $"chapterized-m4b-destination-{Guid.NewGuid():N}");
@@ -2825,6 +2826,7 @@ namespace Chaptarr.Core.Test.MediaFiles
                 }
 
                 var conversion = new FailingM4bConversionService();
+                var jobs = new RecordingConversionJobService();
                 var service = new ImportApprovedBooks(
                     new StubMediaFileService(),
                     new StubMetadataTagService(),
@@ -2844,7 +2846,8 @@ namespace Chaptarr.Core.Test.MediaFiles
                     Proxy<IQualityProfileService>(),
                     conversion,
                     LogManager.GetLogger("ImportApprovedBooksAdditionalCopyFixture"),
-                    configService: CreateConfigService(mergeMultiFileM4b: mergeMultiFileM4b));
+                    configService: CreateConfigService(mergeMultiFileM4b: mergeMultiFileM4b),
+                    conversionJobService: jobs);
 
                 var decisions = paths.Select(path => new ImportDecision<LocalBook>(new LocalBook
                 {
@@ -2862,11 +2865,18 @@ namespace Chaptarr.Core.Test.MediaFiles
                     importMode: ImportMode.Move,
                     cancellationToken: CancellationToken.None);
 
-                Assert.That(conversion.ConvertCalls, Is.EqualTo(expectedConvertCalls));
+                // Conversion is enqueued rather than run inline, so the merge shows up as a queued
+                // job carrying every source file instead of a call into the converter.
+                Assert.That(conversion.ConvertCalls, Is.Zero);
 
-                if (expectedConvertCalls > 0)
+                if (expectedConversions > 0)
                 {
-                    Assert.That(conversion.LastInputFiles, Is.EquivalentTo(paths));
+                    Assert.That(jobs.Request, Is.Not.Null);
+                    Assert.That(jobs.Request.Sources.Select(source => source.Path), Is.EquivalentTo(paths));
+                }
+                else
+                {
+                    Assert.That(jobs.Request, Is.Null);
                 }
             }
             finally
@@ -4123,7 +4133,7 @@ namespace Chaptarr.Core.Test.MediaFiles
         }
 
         [Test]
-        public void should_convert_import_with_no_download_client_item()
+        public void should_enqueue_a_conversion_job_for_an_import_with_no_download_client_item()
         {
             var tempPath = Path.Combine(TestContext.CurrentContext.WorkDirectory, $"conversion-untracked-{Guid.NewGuid():N}.mp3");
             var destinationDir = Path.Combine(TestContext.CurrentContext.WorkDirectory, $"conversion-untracked-destination-{Guid.NewGuid():N}");
@@ -4134,6 +4144,7 @@ namespace Chaptarr.Core.Test.MediaFiles
             {
                 var (_, author, book, edition) = CreateAudiobookConversionGraph(70);
                 var conversion = new FailingM4bConversionService();
+                var jobs = new RecordingConversionJobService();
                 var mover = new StubMoveBookFiles { DestinationPath = destinationPath };
 
                 var service = new ImportApprovedBooks(
@@ -4154,7 +4165,8 @@ namespace Chaptarr.Core.Test.MediaFiles
                     Proxy<ISeriesService>(),
                     Proxy<IQualityProfileService>(),
                     conversion,
-                    LogManager.GetLogger("ImportApprovedBooksAdditionalCopyFixture"));
+                    LogManager.GetLogger("ImportApprovedBooksAdditionalCopyFixture"),
+                    conversionJobService: jobs);
 
                 var localBook = new LocalBook
                 {
@@ -4172,13 +4184,18 @@ namespace Chaptarr.Core.Test.MediaFiles
                     importMode: ImportMode.Move,
                     cancellationToken: CancellationToken.None);
 
+                // The conversion is handed to ConversionJobService rather than run inline, so the
+                // converter is never called and the import parks as Pending. What matters is that
+                // the enqueued request still names this import's sources and lands its workspace
+                // under the destination's .chaptarr-conversions root.
                 Assert.That(results, Has.Count.EqualTo(1));
-                Assert.That(results[0].Result, Is.EqualTo(ImportResultType.Skipped));
-                Assert.That(results[0].Errors.Single(), Is.EqualTo("synthetic conversion failure"));
-                Assert.That(conversion.ConvertCalls, Is.EqualTo(1));
-                Assert.That(conversion.LastInputFiles, Is.EquivalentTo(new[] { tempPath }));
-                Assert.That(conversion.LastOutputFile, Does.StartWith(Path.Combine(destinationDir, ".chaptarr-conversions")));
-                Assert.That(conversion.LastOutputFile, Does.EndWith("Black Sheep.m4b"));
+                Assert.That(results[0].Result, Is.EqualTo(ImportResultType.Pending));
+                Assert.That(conversion.ConvertCalls, Is.Zero);
+                Assert.That(jobs.Request, Is.Not.Null);
+                Assert.That(jobs.Request.DownloadId, Does.StartWith("local-"));
+                Assert.That(jobs.Request.Sources.Select(source => source.Path), Is.EquivalentTo(new[] { tempPath }));
+                Assert.That(jobs.Request.WorkRoot, Does.StartWith(Path.Combine(destinationDir, ".chaptarr-conversions")));
+                Assert.That(jobs.Request.OutputPath, Does.EndWith("Black Sheep.m4b"));
             }
             finally
             {
@@ -4195,7 +4212,7 @@ namespace Chaptarr.Core.Test.MediaFiles
         }
 
         [Test]
-        public void should_convert_import_with_no_download_client_item_inline_instead_of_detaching()
+        public void should_enqueue_rather_than_convert_inline_when_there_is_no_download_client_item()
         {
             var tempDir = Path.Combine(TestContext.CurrentContext.WorkDirectory, $"conversion-untracked-inline-{Guid.NewGuid():N}");
             var destinationDir = Path.Combine(TestContext.CurrentContext.WorkDirectory, $"conversion-untracked-inline-destination-{Guid.NewGuid():N}");
@@ -4251,12 +4268,14 @@ namespace Chaptarr.Core.Test.MediaFiles
                     importMode: ImportMode.Move,
                     cancellationToken: CancellationToken.None);
 
-                // The detached route relies on ProcessMonitoredDownloadsCommand coming back to
-                // import the artifact, and that command only ever walks tracked downloads - a
-                // detached job here would sit at ready-to-import forever.
-                Assert.That(jobs.Request, Is.Null);
-                Assert.That(conversion.ConvertCalls, Is.EqualTo(1));
-                Assert.That(results.Single().Result, Is.EqualTo(ImportResultType.Imported));
+                // Upstream removed the inline route, so this enqueues like any other conversion.
+                // A download with no client item gets ResolveConversionId's synthetic "local-" key,
+                // which is what ConversionJobService's sweep uses to import the finished artifact -
+                // ProcessMonitoredDownloadsCommand only ever walks tracked downloads.
+                Assert.That(conversion.ConvertCalls, Is.Zero);
+                Assert.That(jobs.Request, Is.Not.Null);
+                Assert.That(jobs.Request.DownloadId, Does.StartWith("local-"));
+                Assert.That(results.Single().Result, Is.EqualTo(ImportResultType.Pending));
             }
             finally
             {
@@ -4273,7 +4292,7 @@ namespace Chaptarr.Core.Test.MediaFiles
         }
 
         [Test]
-        public void should_convert_inline_when_the_download_client_item_has_a_blank_download_id()
+        public void should_enqueue_with_a_local_id_when_the_download_client_item_has_a_blank_download_id()
         {
             var tempDir = Path.Combine(TestContext.CurrentContext.WorkDirectory, $"conversion-blank-id-{Guid.NewGuid():N}");
             var destinationDir = Path.Combine(TestContext.CurrentContext.WorkDirectory, $"conversion-blank-id-destination-{Guid.NewGuid():N}");
@@ -4329,11 +4348,12 @@ namespace Chaptarr.Core.Test.MediaFiles
                     importMode: ImportMode.Move,
                     cancellationToken: CancellationToken.None);
 
-                // Enqueue rejects a blank download id, so detaching one would have failed the
-                // import with a validation error instead of converting it.
-                Assert.That(jobs.Request, Is.Null);
-                Assert.That(conversion.ConvertCalls, Is.EqualTo(1));
-                Assert.That(results.Single().Result, Is.EqualTo(ImportResultType.Imported));
+                // A blank download id counts as untracked, so it takes the same synthetic key as a
+                // missing client item rather than being enqueued under an empty id.
+                Assert.That(conversion.ConvertCalls, Is.Zero);
+                Assert.That(jobs.Request, Is.Not.Null);
+                Assert.That(jobs.Request.DownloadId, Does.StartWith("local-"));
+                Assert.That(results.Single().Result, Is.EqualTo(ImportResultType.Pending));
             }
             finally
             {
