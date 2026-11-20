@@ -940,26 +940,6 @@
               }
             }
           },
-          "502": {
-            "description": "Bad Gateway",
-            "content": {
-              "text/plain": {
-                "schema": {
-                  "$ref": "#/components/schemas/LoadImageResponseResource"
-                }
-              },
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/LoadImageResponseResource"
-                }
-              },
-              "text/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/LoadImageResponseResource"
-                }
-              }
-            }
-          },
           "400": {
             "description": "Bad Request",
             "content": {
@@ -1016,6 +996,26 @@
               "text/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiErrorResource"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Bad Gateway",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoadImageResponseResource"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoadImageResponseResource"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoadImageResponseResource"
                 }
               }
             }
@@ -1741,6 +1741,26 @@
           }
         },
         "responses": {
+          "202": {
+            "description": "Accepted",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/PendingBookRequestResource"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PendingBookRequestResource"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PendingBookRequestResource"
+                }
+              }
+            }
+          },
           "409": {
             "description": "Conflict",
             "content": {
@@ -1777,26 +1797,6 @@
               "text/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiErrorResource"
-                }
-              }
-            }
-          },
-          "202": {
-            "description": "Accepted",
-            "content": {
-              "text/plain": {
-                "schema": {
-                  "$ref": "#/components/schemas/PendingBookRequestResource"
-                }
-              },
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/PendingBookRequestResource"
-                }
-              },
-              "text/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/PendingBookRequestResource"
                 }
               }
             }
@@ -16818,6 +16818,9 @@
           "audiobookConversionNoUpscale": {
             "type": "boolean"
           },
+          "audiobookConversionMergeMultiFileM4b": {
+            "type": "boolean"
+          },
           "audiobookConversionAudioChannels": {
             "type": "string",
             "nullable": true
@@ -17550,9 +17553,7 @@
             "type": "string",
             "nullable": true
           },
-          "value": {
-            "nullable": true
-          },
+          "value": { },
           "type": {
             "type": "string",
             "nullable": true
@@ -19885,6 +19886,9 @@
             "type": "boolean"
           },
           "importExtraFiles": {
+            "type": "boolean"
+          },
+          "importAdditionalCopiesAsNewBooks": {
             "type": "boolean"
           },
           "extraFileExtensions": {
@@ -24296,6 +24300,272 @@
     },
     {
       "apikey": [ ]
+    }
+  ],
+  "tags": [
+    {
+      "name": "AddSeries"
+    },
+    {
+      "name": "ApiInfo"
+    },
+    {
+      "name": "Authentication"
+    },
+    {
+      "name": "StaticResource"
+    },
+    {
+      "name": "Author"
+    },
+    {
+      "name": "AuthorDeletePreview"
+    },
+    {
+      "name": "AuthorEditor"
+    },
+    {
+      "name": "AuthorLookup"
+    },
+    {
+      "name": "Backup"
+    },
+    {
+      "name": "Blocklist"
+    },
+    {
+      "name": "Book"
+    },
+    {
+      "name": "BookEditor"
+    },
+    {
+      "name": "BookFile"
+    },
+    {
+      "name": "BookLookup"
+    },
+    {
+      "name": "Bookshelf"
+    },
+    {
+      "name": "Calendar"
+    },
+    {
+      "name": "CalendarFeed"
+    },
+    {
+      "name": "Command"
+    },
+    {
+      "name": "ConversionConfig"
+    },
+    {
+      "name": "CustomFilter"
+    },
+    {
+      "name": "CustomFormat"
+    },
+    {
+      "name": "Cutoff"
+    },
+    {
+      "name": "DelayProfile"
+    },
+    {
+      "name": "DevelopmentConfig"
+    },
+    {
+      "name": "DiskSpace"
+    },
+    {
+      "name": "DownloadClient"
+    },
+    {
+      "name": "DownloadClientConfig"
+    },
+    {
+      "name": "Edition"
+    },
+    {
+      "name": "FileSystem"
+    },
+    {
+      "name": "HardcoverConfig"
+    },
+    {
+      "name": "Health"
+    },
+    {
+      "name": "History"
+    },
+    {
+      "name": "HostConfig"
+    },
+    {
+      "name": "Ignored"
+    },
+    {
+      "name": "ImportList"
+    },
+    {
+      "name": "ImportListExclusion"
+    },
+    {
+      "name": "Indexer"
+    },
+    {
+      "name": "IndexerConfig"
+    },
+    {
+      "name": "IndexerFlag"
+    },
+    {
+      "name": "Language"
+    },
+    {
+      "name": "LibrarySearch"
+    },
+    {
+      "name": "Localization"
+    },
+    {
+      "name": "Log"
+    },
+    {
+      "name": "LogFile"
+    },
+    {
+      "name": "ManualImport"
+    },
+    {
+      "name": "MatchingLog"
+    },
+    {
+      "name": "MediaCover"
+    },
+    {
+      "name": "MediaManagementConfig"
+    },
+    {
+      "name": "Metadata"
+    },
+    {
+      "name": "MetadataProfile"
+    },
+    {
+      "name": "MetadataProfileSchema"
+    },
+    {
+      "name": "MetadataProviderConfig"
+    },
+    {
+      "name": "Missing"
+    },
+    {
+      "name": "NamingConfig"
+    },
+    {
+      "name": "NamingPattern"
+    },
+    {
+      "name": "Notification"
+    },
+    {
+      "name": "OidcAuthentication"
+    },
+    {
+      "name": "Parse"
+    },
+    {
+      "name": "PendingAuthorImport"
+    },
+    {
+      "name": "Ping"
+    },
+    {
+      "name": "PlexAuthentication"
+    },
+    {
+      "name": "Proxy"
+    },
+    {
+      "name": "ProxyDebug"
+    },
+    {
+      "name": "QualityDefinition"
+    },
+    {
+      "name": "QualityProfile"
+    },
+    {
+      "name": "QualityProfileSchema"
+    },
+    {
+      "name": "Queue"
+    },
+    {
+      "name": "QueueAction"
+    },
+    {
+      "name": "QueueDetails"
+    },
+    {
+      "name": "QueueStatus"
+    },
+    {
+      "name": "Release"
+    },
+    {
+      "name": "ReleaseProfile"
+    },
+    {
+      "name": "ReleasePush"
+    },
+    {
+      "name": "RemotePathMapping"
+    },
+    {
+      "name": "RenameBook"
+    },
+    {
+      "name": "RetagBook"
+    },
+    {
+      "name": "RootFolder"
+    },
+    {
+      "name": "Search"
+    },
+    {
+      "name": "Series"
+    },
+    {
+      "name": "SeriesLookup"
+    },
+    {
+      "name": "SettingsBackup"
+    },
+    {
+      "name": "System"
+    },
+    {
+      "name": "Tag"
+    },
+    {
+      "name": "TagDetails"
+    },
+    {
+      "name": "Task"
+    },
+    {
+      "name": "UiConfig"
+    },
+    {
+      "name": "Update"
+    },
+    {
+      "name": "UpdateLogFile"
     }
   ]
 }

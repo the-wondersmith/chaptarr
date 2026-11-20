@@ -632,8 +632,10 @@ namespace NzbDrone.Core.Queue
                 trackedQueue.Select(q => q.DownloadId).Where(id => !string.IsNullOrWhiteSpace(id)),
                 StringComparer.OrdinalIgnoreCase);
 
-            return _conversionTrackingService.GetUntracked()
-                .Where(conversion => !tracked.Contains(conversion.DownloadId))
+            // A tracker that reports nothing is not an error: the queue simply has no untracked
+            // conversions to synthesise rows for.
+            return (_conversionTrackingService.GetUntracked() ?? Enumerable.Empty<UntrackedConversion>())
+                .Where(conversion => conversion != null && !tracked.Contains(conversion.DownloadId))
                 .Select(MapUntrackedConversion)
                 .ToList();
         }

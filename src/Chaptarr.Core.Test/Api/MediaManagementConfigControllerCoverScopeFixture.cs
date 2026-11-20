@@ -79,6 +79,7 @@ namespace Chaptarr.Core.Test.Api
                     "get_MinimumFreeSpaceWhenImporting" => 100,
                     "get_CopyUsingHardlinks" => false,
                     "get_ImportExtraFiles" => false,
+                    "get_ImportAdditionalCopiesAsNewBooks" => false,
                     "get_ExtraFileExtensions" => null,
                     _ => throw new System.NotImplementedException(targetMethod?.Name)
                 };

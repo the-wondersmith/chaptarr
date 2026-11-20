@@ -64,7 +64,15 @@ namespace Chaptarr.Core.Test.Api
             var schema = repository.Schemas[type.Name];
             Assert.That(schema.Properties.ContainsKey(name), Is.True);
             var snapshot = JObject.Parse(File.ReadAllText(Path.Combine(TestContext.CurrentContext.TestDirectory, "Fixtures", "openapi.json")));
-            Assert.That(snapshot["components"]["schemas"][type.Name]["properties"][name]["type"].Value<string>(), Is.EqualTo(schema.Properties[name].Type));
+
+            // The published contract stores an OpenAPI 3.0 type string ("boolean"); Microsoft.OpenApi
+            // v2 exposes it as a JsonSchemaType flags enum that also carries Null for an optional
+            // field. Compare on the base type name so a nullable field still matches its snapshot.
+            var expected = snapshot["components"]["schemas"][type.Name]["properties"][name]["type"].Value<string>();
+            var actual = schema.Properties[name].Type;
+
+            Assert.That(actual.HasValue, Is.True, $"{type.Name}.{name} has no schema type");
+            Assert.That(actual.Value.ToString(), Does.Contain(expected).IgnoreCase);
         }
 
         [Test]
