@@ -3080,5 +3080,59 @@ namespace Chaptarr.Core.Test.MediaFiles
                 ["TITLE"] = new List<string> { title }
             };
         }
+
+        [TestCase(true, true)]
+        [TestCase(false, false)]
+        public void should_discount_conversion_sources_when_deciding_folder_deletion(bool markConsumed, bool expectedDeletable)
+        {
+            // A merge-to-m4b import leaves its source files on disk under their original names and
+            // imports the generated file instead. Counting those sources as foreign book files kept
+            // every converted download folder alive forever, because the converted import is the
+            // only pass that ever revisits that folder.
+            var folder = Path.Combine(TestContext.CurrentContext.WorkDirectory, "conversion-cleanup-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(folder);
+
+            try
+            {
+                var sources = new[] { Path.Combine(folder, "Part01.mp3"), Path.Combine(folder, "Part02.mp3") };
+                foreach (var path in sources)
+                {
+                    File.WriteAllText(path, "fake mp3");
+                }
+
+                var fileSystem = new System.IO.Abstractions.FileSystem();
+                var disk = Chaptarr.Core.Test.Common.InterfaceProxy.Proxy<IDiskProvider>((method, args) => method.Name switch
+                {
+                    nameof(IDiskProvider.GetFiles) => Directory.GetFiles((string)args[0], "*", (bool)args[1] ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly),
+                    _ => null
+                });
+                var scan = Chaptarr.Core.Test.Common.InterfaceProxy.Proxy<IDiskScanService>((method, args) =>
+                    Directory.GetFiles((string)args[0], "*", SearchOption.AllDirectories)
+                        .Where(path => MediaFileExtensions.AllExtensions.Contains(Path.GetExtension(path)))
+                        .Select(path => (IFileInfo)fileSystem.FileInfo.FromFileName(path)).ToArray());
+
+                var service = new DownloadedBooksImportService(
+                    disk, scan, null, null, null, null, null, null, null, null, null, null, null, null, null, null,
+                    LogManager.GetCurrentClassLogger(),
+                    global::Chaptarr.Core.Test.Common.ImportLifecycleStubs.EmptyQueue(),
+                    global::Chaptarr.Core.Test.Common.ImportLifecycleStubs.NoConversionJobs());
+
+                var directoryInfo = fileSystem.DirectoryInfo.FromDirectoryName(folder);
+
+                Assert.That(
+                    service.ShouldDeleteFolder(directoryInfo, markConsumed ? sources : null),
+                    Is.EqualTo(expectedDeletable),
+                    markConsumed
+                        ? "sources consumed by this import must not keep the folder alive"
+                        : "book files this import did not consume must still block deletion");
+            }
+            finally
+            {
+                if (Directory.Exists(folder))
+                {
+                    Directory.Delete(folder, true);
+                }
+            }
+        }
     }
 }

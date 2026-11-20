@@ -5,6 +5,7 @@ using System.IO.Abstractions;
 using System.Linq;
 using System.Threading.Tasks;
 using NLog;
+using NzbDrone.Common;
 using NzbDrone.Common.Disk;
 using NzbDrone.Common.Extensions;
 using NzbDrone.Common.EnvironmentInfo;
@@ -371,7 +372,14 @@ namespace NzbDrone.Core.MediaFiles
                 ImportExtraFiles(importResults, directoryInfo, effectiveMode == ImportMode.Move, fileListScoped ? visibleFiles : null);
             }
 
-            if (!hasPendingConversion && effectiveMode == ImportMode.Move && importResults.Any(i => i.Result == ImportResultType.Imported) && ShouldDeleteFolder(directoryInfo))
+            // Files a conversion consumed are still on disk under their original names; they are not
+            // leftovers and must not keep the download folder alive.
+            var consumedSourcePaths = importResults
+                .Where(result => result.Result == ImportResultType.Imported)
+                .SelectMany(result => result.ImportDecision?.Item?.GeneratedConversionSourcePaths ?? new List<string>())
+                .ToList();
+
+            if (!hasPendingConversion && effectiveMode == ImportMode.Move && importResults.Any(i => i.Result == ImportResultType.Imported) && ShouldDeleteFolder(directoryInfo, consumedSourcePaths))
             {
                 _logger.Debug("Deleting folder after importing valid files");
                 try { _diskProvider.DeleteFolder(directoryInfo.FullName, true); } catch (IOException e) { _logger.Debug(e, "Unable to delete folder after importing: {0}", e.Message); }
@@ -1295,16 +1303,31 @@ namespace NzbDrone.Core.MediaFiles
             }
         }
 
-        public bool ShouldDeleteFolder(IDirectoryInfo directoryInfo)
+        // A conversion consumes its source files and imports a generated file in their place, so the
+        // sources are still sitting in the download folder when the import completes. Treating them
+        // as "someone else's book files" leaves the folder behind forever: the converted import is
+        // the only pass that will ever look at it. Only files this import actually consumed are
+        // discounted, so an unrelated book in the same folder still blocks deletion.
+        public bool ShouldDeleteFolder(IDirectoryInfo directoryInfo, IEnumerable<string> consumedSourcePaths = null)
         {
             try
             {
+                var consumed = consumedSourcePaths == null
+                    ? null
+                    : new HashSet<string>(consumedSourcePaths.Where(p => !string.IsNullOrWhiteSpace(p)), PathEqualityComparer.Instance);
+
                 var bookFiles = _diskScanService.GetBookFiles(directoryInfo.FullName);
                 var rarFiles = _diskProvider.GetFiles(directoryInfo.FullName, true)
                     .Where(f => Path.GetExtension(f).Equals(".rar", StringComparison.OrdinalIgnoreCase));
 
                 foreach (var bookFile in bookFiles)
                 {
+                    if (consumed != null && consumed.Contains(bookFile.FullName))
+                    {
+                        _logger.Debug("Conversion source consumed by this import, not treating as leftover: [{0}]", bookFile.FullName);
+                        continue;
+                    }
+
                     var bookParseResult = Parser.Parser.ParseBookTitle(bookFile.Name);
                     if (bookParseResult == null)
                     {
