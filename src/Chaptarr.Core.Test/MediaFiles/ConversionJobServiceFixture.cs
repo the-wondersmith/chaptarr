@@ -1258,5 +1258,62 @@ CREATE TABLE ""ConversionJobs"" (
 
             return new ConversionJobRepository(new MainDatabase(database), new StubEventAggregator());
         }
+
+        [Test]
+        public void untracked_conversion_id_should_be_recognisable_from_the_id_alone()
+        {
+            // The sweep has only the job to go on when deciding how a finished conversion gets
+            // imported, and every transition into ready-to-import reports it without a download id.
+            Assert.Multiple(() =>
+            {
+                Assert.That(ConversionWorkPath.IsLocalConversionId("local-0123456789abcdef"), Is.True);
+                Assert.That(ConversionWorkPath.IsLocalConversionId("LOCAL-0123456789ABCDEF"), Is.True);
+                Assert.That(ConversionWorkPath.IsLocalConversionId("56BC9F6685124E49F37F9224FE7FD5256665A58D"), Is.False,
+                    "a real download-client id is tracked and reached by ProcessMonitoredDownloads");
+                Assert.That(ConversionWorkPath.IsLocalConversionId(null), Is.False);
+                Assert.That(ConversionWorkPath.IsLocalConversionId(string.Empty), Is.False);
+            });
+        }
+
+        [Test]
+        public void should_resolve_a_single_source_folder_to_rescan_for_an_untracked_conversion()
+        {
+            var folder = Path.Combine(TestContext.CurrentContext.WorkDirectory, "untracked-sources");
+            var request = new ConversionJobRequest
+            {
+                DownloadId = "local-abc0123456789def",
+                Sources = new List<ConversionArtifactSource>
+                {
+                    new() { Path = Path.Combine(folder, "Part02.mp3") },
+                    new() { Path = Path.Combine(folder, "Part01.mp3") }
+                }
+            };
+
+            Assert.That(ConversionJobService.GetConversionSourceFolder(request), Is.EqualTo(folder));
+        }
+
+        [Test]
+        public void should_refuse_to_guess_a_rescan_folder_when_sources_span_several()
+        {
+            // Re-entering on one of several folders would hand the scan a payload it never
+            // converted, so the job is left for a manual import instead.
+            var root = Path.Combine(TestContext.CurrentContext.WorkDirectory, "untracked-sources");
+            var request = new ConversionJobRequest
+            {
+                DownloadId = "local-abc0123456789def",
+                Sources = new List<ConversionArtifactSource>
+                {
+                    new() { Path = Path.Combine(root, "CD1", "Part01.mp3") },
+                    new() { Path = Path.Combine(root, "CD2", "Part02.mp3") }
+                }
+            };
+
+            Assert.Multiple(() =>
+            {
+                Assert.That(ConversionJobService.GetConversionSourceFolder(request), Is.Null);
+                Assert.That(ConversionJobService.GetConversionSourceFolder(new ConversionJobRequest()), Is.Null);
+                Assert.That(ConversionJobService.GetConversionSourceFolder(null), Is.Null);
+            });
+        }
     }
 }
